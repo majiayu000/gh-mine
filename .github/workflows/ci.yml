@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: bash -n gh-mine install.sh
+
+      - name: ShellCheck (advisory)
+        run: |
+          # Advisory only: report findings but do not fail the build.
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck gh-mine install.sh || true

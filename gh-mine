@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# gh-mine —— 列出自己的 open issue 和 PR
+#
+# 默认口径: owner 是当前活跃账号的仓库里的 open issue / PR（"自己的仓库"，不含外部仓库）
+# 依赖: gh（已登录）, jq
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+gh-mine —— 列出自己的 open issue 和 PR
+
+用法:
+  gh-mine                       默认: 自己仓库的 open issue + PR
+  gh-mine -i | --issues         只看 issue
+  gh-mine -p | --prs            只看 PR
+  gh-mine --authored            口径: 我创建的（跨所有仓库，含外部）
+  gh-mine --assigned            口径: 分配给我的（跨所有仓库）
+  gh-mine --repo <owner/name>   限定单个仓库（可省略 owner）
+  gh-mine --account <login>     指定账号（默认取当前活跃账号）
+  gh-mine -h | --help
+
+口径:
+  默认        user:<login>      自己仓库（owner 是自己）
+  --authored  author:<login>    我创建的，跨所有仓库
+  --assigned  assignee:<login>  分配给我的，跨所有仓库
+EOF
+}
+
+want_issues=1
+want_prs=1
+scope=""            # "" | author | assignee
+repo=""
+account=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--issues) want_issues=1; want_prs=0; shift ;;
+    -p|--prs)    want_prs=1; want_issues=0; shift ;;
+    --authored)  scope="author"; shift ;;
+    --assigned)  scope="assignee"; shift ;;
+    --repo)      repo="${2:?--repo 需要值}"; shift 2 ;;
+    --repo=*)    repo="${1#*=}"; shift ;;
+    --account)   account="${2:?--account 需要值}"; shift 2 ;;
+    --account=*) account="${1#*=}"; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *) echo "gh-mine: 未知参数 '$1'" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+for c in gh jq; do
+  command -v "$c" >/dev/null 2>&1 || { echo "gh-mine: 缺少依赖 '$c'" >&2; exit 1; }
+done
+
+if [[ -z "$account" ]]; then
+  account="$(gh api user --jq '.login')" || {
+    echo "gh-mine: 无法获取当前活跃账号，请先执行 gh auth login" >&2; exit 1; }
+fi
+
+# 构造 search query（$1 = issue | pr）
+build_query() {
+  local q="is:$1 is:open"
+  if [[ -n "$repo" ]]; then
+    local r="$repo"; [[ "$r" == *"/"* ]] || r="${account}/${r}"
+    q="repo:${r} ${q}"
+  else
+    case "$scope" in
+      author)   q="author:${account} ${q}" ;;
+      assignee) q="assignee:${account} ${q}" ;;
+      *)        q="user:${account} ${q}" ;;
+    esac
+  fi
+  printf '%s' "$q"
+}
+
+# 口径名（用于标题）
+scope_label() {
+  if [[ -n "$repo" ]]; then
+    local r="$repo"; [[ "$r" == *"/"* ]] || r="${account}/${r}"
+    printf '仓库 %s' "$r"
+  else
+    case "$scope" in
+      author)   printf '我创建的' ;;
+      assignee) printf '分配给我的' ;;
+      *)        printf '自己的仓库' ;;
+    esac
+  fi
+}
+
+# 打印一类（$1 = issue | pr, $2 = 标签）
+print_detail() {
+  local kind="$1" label="$2"
+  local q encoded resp total
+  q="$(build_query "$kind")"
+  encoded="$(jq -rn --arg s "$q" '$s|@uri')"
+  resp="$(gh api "search/issues?q=${encoded}&per_page=100")"
+  total="$(jq -r '.total_count' <<<"$resp")"
+  printf '\n【%s · open %s】 %s 条\n' "$(scope_label)" "$label" "$total"
+  if (( total == 0 )); then return 0; fi
+  if (( total > 100 )); then
+    printf '  (注意: 总数 %s 超过 100，下面仅列前 100 条)\n' "$total" >&2
+  fi
+  jq -c '.items[]' <<<"$resp" | jq -s -r '
+    group_by(.repository_url | split("/") | .[-1])
+    | .[]
+    | "  " + (.[0].repository_url | split("/") | .[-1]) + " (" + (length | tostring) + ")",
+      (.[] | "    - #" + (.number | tostring) + " " + .title)
+  '
+}
+
+printf '账号: %s\n' "$account"
+if (( want_issues == 1 )); then print_detail issue Issue; fi
+if (( want_prs == 1 ));    then print_detail pr PR; fi

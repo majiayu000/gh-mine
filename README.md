@@ -52,6 +52,7 @@ gh-mine --repo <name>    # limit to one repo (owner optional)
 gh-mine --stale <days>   # only items not updated in <days> days
 gh-mine --label <name>   # filter by label (repeatable, AND)
 gh-mine --account <user> # query another account (does not switch `gh` login)
+gh-mine --json           # emit a JSON array (for jq / piping)
 gh-mine -h | --help
 ```
 
@@ -93,6 +94,19 @@ $ gh-mine --label bug           # only items labelled "bug"
 `--stale <days>` filters to items not updated in the last `<days>` days (added as
 an `updated:<date` qualifier). `--label <name>` can be repeated and combines with
 AND.
+
+### JSON output
+
+`--json` emits a flat JSON array (one object per issue/PR) instead of the grouped
+text — useful for piping into `jq` or other tools:
+
+```bash
+gh-mine --json | jq '.[] | select(.kind=="issue") | .repo'
+gh-mine --json --repo litellm-rs --issues | jq '[.[].number]'
+```
+
+Each element carries `scope`, `kind` (`issue`/`pr`), `repo`, `number`, `title`,
+`url`, `state`, `updated_at`. Empty results emit `[]`.
 
 ## Notes
 

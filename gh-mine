@@ -20,12 +20,17 @@ gh-mine —— 列出自己的 open issue 和 PR
   gh-mine --stale <days>        只看超过 <days> 天未更新的
   gh-mine --label <name>        按标签过滤（可多次，AND 关系）
   gh-mine --account <login>     指定账号（默认取当前活跃账号）
+  gh-mine --json                输出 JSON 数组（便于 jq / 管道消费）
   gh-mine -h | --help
 
 口径:
   默认        user:<login>      自己仓库（owner 是自己）
   --authored  author:<login>    我创建的，跨所有仓库
   --assigned  assignee:<login>  分配给我的，跨所有仓库
+
+JSON 模式 (--json):
+  输出扁平数组，每项含 scope/kind/repo/number/title/url/state/updated_at。
+  例: gh-mine --json | jq '.[] | select(.kind=="issue") | .repo'
 EOF
 }
 
@@ -36,6 +41,8 @@ repo=""
 account=""
 stale_days=""
 labels=()
+json_mode=0
+json_tmp=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --label=*)   labels+=("${1#*=}"); shift ;;
     --account)   account="${2:?--account 需要值}"; shift 2 ;;
     --account=*) account="${1#*=}"; shift ;;
+    --json)      json_mode=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "gh-mine: 未知参数 '$1'" >&2; usage >&2; exit 2 ;;
   esac
@@ -63,10 +71,24 @@ done
 if [[ -n "$stale_days" ]] && ! [[ "$stale_days" =~ ^[0-9]+$ ]]; then
   echo "gh-mine: --stale 需要非负整数，得到 '$stale_days'" >&2; exit 2
 fi
+# 预计算 --stale 截止日期（一次；macOS date -v / GNU date -d 双兼容，失败则明确报错）
+stale_cutoff=""
+if [[ -n "$stale_days" ]]; then
+  stale_cutoff="$(date -v-${stale_days}d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d 2>/dev/null || true)"
+  if [[ -z "$stale_cutoff" ]]; then
+    echo "gh-mine: --stale ${stale_days} 超出 date 可计算范围" >&2; exit 2
+  fi
+fi
 
 if [[ -z "$account" ]]; then
   account="$(gh api user --jq '.login')" || {
     echo "gh-mine: 无法获取当前活跃账号，请先执行 gh auth login" >&2; exit 1; }
+fi
+
+# JSON 模式: 临时文件累积结果，退出时清理
+if (( json_mode )); then
+  json_tmp="$(mktemp "${TMPDIR:-/tmp}/gh-mine.XXXXXX")"
+  trap 'rm -f "$json_tmp"' EXIT
 fi
 
 # 构造 search query（$1 = issue | pr）
@@ -82,11 +104,8 @@ build_query() {
       *)        q="user:${account} ${q}" ;;
     esac
   fi
-  if [[ -n "$stale_days" ]]; then
-    # 截止日期 = N 天前（macOS date -v / GNU date -d 双兼容）
-    local cutoff
-    cutoff="$(date -v-${stale_days}d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d)"
-    q="${q} updated:<${cutoff}"
+  if [[ -n "$stale_cutoff" ]]; then
+    q="${q} updated:<${stale_cutoff}"
   fi
   if [[ ${#labels[@]} -gt 0 ]]; then
     local l
@@ -95,7 +114,7 @@ build_query() {
   printf '%s' "$q"
 }
 
-# 口径名（用于标题）
+# 口径名（用于标题 / JSON scope 字段）
 scope_label() {
   if [[ -n "$repo" ]]; then
     local r="$repo"; [[ "$r" == *"/"* ]] || r="${account}/${r}"
@@ -109,7 +128,7 @@ scope_label() {
   fi
 }
 
-# 打印一类（$1 = issue | pr, $2 = 标签）
+# 打印一类（$1 = issue|pr 用于 query 和 JSON kind; $2 = 标题标签）
 print_detail() {
   local kind="$1" label="$2"
   local q encoded resp total
@@ -117,6 +136,16 @@ print_detail() {
   encoded="$(jq -rn --arg s "$q" '$s|@uri')"
   resp="$(gh api "search/issues?q=${encoded}&per_page=100")"
   total="$(jq -r '.total_count' <<<"$resp")"
+
+  if (( json_mode )); then
+    if (( total > 0 )); then
+      jq -c --arg kind "$kind" --arg scope "$(scope_label)" \
+        '.items[] | {scope:$scope, kind:$kind, repo:(.repository_url|split("/")|.[-1]),
+                     number, title, url:.html_url, state, updated_at}' <<<"$resp" >> "$json_tmp"
+    fi
+    return 0
+  fi
+
   printf '\n【%s · open %s】 %s 条\n' "$(scope_label)" "$label" "$total"
   if (( total == 0 )); then return 0; fi
   if (( total > 100 )); then
@@ -130,6 +159,17 @@ print_detail() {
   '
 }
 
-printf '账号: %s\n' "$account"
+if (( ! json_mode )); then
+  printf '账号: %s\n' "$account"
+fi
 if (( want_issues == 1 )); then print_detail issue Issue; fi
 if (( want_prs == 1 ));    then print_detail pr PR; fi
+
+if (( json_mode )); then
+  # slurp 成 JSON 数组；无结果输出 []
+  if [[ -s "$json_tmp" ]]; then
+    jq -s '.' "$json_tmp"
+  else
+    printf '[]\n'
+  fi
+fi

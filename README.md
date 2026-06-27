@@ -49,6 +49,8 @@ gh-mine -p | --prs       # PRs only
 gh-mine --authored       # scope: everything you created (all repos)
 gh-mine --assigned       # scope: everything assigned to you (all repos)
 gh-mine --repo <name>    # limit to one repo (owner optional)
+gh-mine --stale <days>   # only items not updated in <days> days
+gh-mine --label <name>   # filter by label (repeatable, AND)
 gh-mine --account <user> # query another account (does not switch `gh` login)
 gh-mine -h | --help
 ```
@@ -63,6 +65,34 @@ gh-mine -h | --help
 
 Output is grouped by repository with a per-scope count. The login defaults to the
 currently active `gh` account (`gh api user`).
+
+### Example output
+
+```text
+$ gh-mine
+账号: majiayu000
+
+【自己的仓库 · open Issue】 23 条
+  litellm-rs (5)
+    - #715 Split provider failure facts from retry policy and HTTP mapping
+    - #714 Provider registry needs a single declaration source and conformance tests
+  remem (5)
+    - #658 Track remaining blocked and umbrella work after #643 closure
+  ...
+
+【自己的仓库 · open PR】 15 条
+  rclean (3)
+    - #183 feat: report AI model stores conservatively
+    - #177 feat: add IDE cache and log rules
+  ...
+
+$ gh-mine --stale 30 --issues   # only issues not updated in 30+ days
+$ gh-mine --label bug           # only items labelled "bug"
+```
+
+`--stale <days>` filters to items not updated in the last `<days>` days (added as
+an `updated:<date` qualifier). `--label <name>` can be repeated and combines with
+AND.
 
 ## Notes
 

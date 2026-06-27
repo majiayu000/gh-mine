@@ -17,6 +17,8 @@ gh-mine —— 列出自己的 open issue 和 PR
   gh-mine --authored            口径: 我创建的（跨所有仓库，含外部）
   gh-mine --assigned            口径: 分配给我的（跨所有仓库）
   gh-mine --repo <owner/name>   限定单个仓库（可省略 owner）
+  gh-mine --stale <days>        只看超过 <days> 天未更新的
+  gh-mine --label <name>        按标签过滤（可多次，AND 关系）
   gh-mine --account <login>     指定账号（默认取当前活跃账号）
   gh-mine -h | --help
 
@@ -32,6 +34,8 @@ want_prs=1
 scope=""            # "" | author | assignee
 repo=""
 account=""
+stale_days=""
+labels=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +45,10 @@ while [[ $# -gt 0 ]]; do
     --assigned)  scope="assignee"; shift ;;
     --repo)      repo="${2:?--repo 需要值}"; shift 2 ;;
     --repo=*)    repo="${1#*=}"; shift ;;
+    --stale)     stale_days="${2:?--stale 需要值}"; shift 2 ;;
+    --stale=*)   stale_days="${1#*=}"; shift ;;
+    --label)     labels+=("${2:?--label 需要值}"); shift 2 ;;
+    --label=*)   labels+=("${1#*=}"); shift ;;
     --account)   account="${2:?--account 需要值}"; shift 2 ;;
     --account=*) account="${1#*=}"; shift ;;
     -h|--help)   usage; exit 0 ;;
@@ -51,6 +59,10 @@ done
 for c in gh jq; do
   command -v "$c" >/dev/null 2>&1 || { echo "gh-mine: 缺少依赖 '$c'" >&2; exit 1; }
 done
+
+if [[ -n "$stale_days" ]] && ! [[ "$stale_days" =~ ^[0-9]+$ ]]; then
+  echo "gh-mine: --stale 需要非负整数，得到 '$stale_days'" >&2; exit 2
+fi
 
 if [[ -z "$account" ]]; then
   account="$(gh api user --jq '.login')" || {
@@ -69,6 +81,16 @@ build_query() {
       assignee) q="assignee:${account} ${q}" ;;
       *)        q="user:${account} ${q}" ;;
     esac
+  fi
+  if [[ -n "$stale_days" ]]; then
+    # 截止日期 = N 天前（macOS date -v / GNU date -d 双兼容）
+    local cutoff
+    cutoff="$(date -v-${stale_days}d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d)"
+    q="${q} updated:<${cutoff}"
+  fi
+  if [[ ${#labels[@]} -gt 0 ]]; then
+    local l
+    for l in "${labels[@]}"; do q="${q} label:\"${l}\""; done
   fi
   printf '%s' "$q"
 }

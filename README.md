@@ -46,6 +46,10 @@ Make sure `~/.local/bin` is on your `PATH`.
 gh-mine                  # your own repos: open issues + PRs (default)
 gh-mine -i | --issues    # issues only
 gh-mine -p | --prs       # PRs only
+gh-mine --discussions    # latest Discussions in repos you own
+gh-mine --moved-to-discussion # closed issues whose body/comments link to discussions/
+gh-mine --hygiene        # Discussions + moved-to-discussion view
+gh-mine --discussion-limit 50 # max Discussions read per repo (default: 20)
 gh-mine --authored       # scope: everything you created (all repos)
 gh-mine --assigned       # scope: everything assigned to you (all repos)
 gh-mine --repo <name>    # limit to one repo (owner optional)
@@ -89,11 +93,26 @@ $ gh-mine
 
 $ gh-mine --stale 30 --issues   # only issues not updated in 30+ days
 $ gh-mine --label bug           # only items labelled "bug"
+$ gh-mine --hygiene             # Discussions plus issues moved to Discussions
+$ gh-mine --repo remem --discussions --json
 ```
 
 `--stale <days>` filters to items not updated in the last `<days>` days (added as
 an `updated:<date` qualifier). `--label <name>` can be repeated and combines with
 AND.
+
+### Discussion hygiene
+
+`--discussions` uses GitHub GraphQL to list the most recently updated
+Discussions in owned repositories that have Discussions enabled. `--repo` limits
+the scan to a single repository, and `--discussion-limit` controls how many
+Discussions are fetched per repository. Discussion enumeration is repository
+scoped, so `--authored` and `--assigned` are not supported with
+`--discussions` or `--hygiene`.
+
+`--moved-to-discussion` reports closed issues whose body or comments contain
+`discussions/`. This is a lightweight way to find roadmap or umbrella issues
+that were moved out of the issue tracker. `--hygiene` combines both views.
 
 ### JSON output
 
@@ -103,10 +122,13 @@ text — useful for piping into `jq` or other tools:
 ```bash
 gh-mine --json | jq '.[] | select(.kind=="issue") | .repo'
 gh-mine --json --repo litellm-rs --issues | jq '[.[].number]'
+gh-mine --json --hygiene | jq '.[] | select(.kind=="moved_to_discussion")'
 ```
 
 Each element carries `scope`, `kind` (`issue`/`pr`), `repo`, `number`, `title`,
-`url`, `state`, `updated_at`. Empty results emit `[]`.
+`url`, `state`, `updated_at`. Discussion items add `created_at`, `category`, and
+`author`; moved-to-discussion issue items add `closed_at`. Empty results emit
+`[]`.
 
 ## Notes
 
@@ -115,6 +137,8 @@ Each element carries `scope`, `kind` (`issue`/`pr`), `repo`, `number`, `title`,
   non-GET request and returns 404).
 - Search results are capped at 100 per request; if a scope exceeds that, the tool
   prints a warning and lists the first 100.
+- Discussion listing uses GitHub GraphQL because Discussions are not returned by
+  the Issues search endpoint.
 
 ## Contributing
 

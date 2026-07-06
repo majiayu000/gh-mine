@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gh-mine —— 列出自己的 open issue 和 PR
+# gh-mine —— 列出自己的 open issue / PR / Discussion hygiene
 #
 # 默认口径: owner 是当前活跃账号的仓库里的 open issue / PR（"自己的仓库"，不含外部仓库）
 # 依赖: gh（已登录）, jq
@@ -8,12 +8,16 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-gh-mine —— 列出自己的 open issue 和 PR
+gh-mine —— 列出自己的 open issue / PR / Discussion hygiene
 
 用法:
   gh-mine                       默认: 自己仓库的 open issue + PR
   gh-mine -i | --issues         只看 issue
   gh-mine -p | --prs            只看 PR
+  gh-mine --discussions         只看启用 Discussions 的仓库里的最新 Discussions
+  gh-mine --moved-to-discussion 只看已关闭且正文/评论含 discussions/ 的 issue
+  gh-mine --hygiene             Discussion + moved-to-discussion 监控视图
+  gh-mine --discussion-limit N  每个仓库最多读取 N 条 Discussion（默认 20）
   gh-mine --authored            口径: 我创建的（跨所有仓库，含外部）
   gh-mine --assigned            口径: 分配给我的（跨所有仓库）
   gh-mine --repo <owner/name>   限定单个仓库（可省略 owner）
@@ -29,13 +33,16 @@ gh-mine —— 列出自己的 open issue 和 PR
   --assigned  assignee:<login>  分配给我的，跨所有仓库
 
 JSON 模式 (--json):
-  输出扁平数组，每项含 scope/kind/repo/number/title/url/state/updated_at。
+  输出扁平数组。issue/PR 项含 scope/kind/repo/number/title/url/state/updated_at。
+  Discussion 项额外含 created_at/category/author；moved-to-discussion 项额外含 closed_at。
   例: gh-mine --json | jq '.[] | select(.kind=="issue") | .repo'
 EOF
 }
 
 want_issues=1
 want_prs=1
+want_discussions=0
+want_moved_to_discussion=0
 scope=""            # "" | author | assignee
 repo=""
 account=""
@@ -43,11 +50,20 @@ stale_days=""
 labels=()
 json_mode=0
 json_tmp=""
+discussion_limit=20
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -i|--issues) want_issues=1; want_prs=0; shift ;;
     -p|--prs)    want_prs=1; want_issues=0; shift ;;
+    --discussions)
+      want_issues=0; want_prs=0; want_discussions=1; shift ;;
+    --moved-to-discussion)
+      want_issues=0; want_prs=0; want_moved_to_discussion=1; shift ;;
+    --hygiene)
+      want_issues=0; want_prs=0; want_discussions=1; want_moved_to_discussion=1; shift ;;
+    --discussion-limit) discussion_limit="${2:?--discussion-limit 需要值}"; shift 2 ;;
+    --discussion-limit=*) discussion_limit="${1#*=}"; shift ;;
     --authored)  scope="author"; shift ;;
     --assigned)  scope="assignee"; shift ;;
     --repo)      repo="${2:?--repo 需要值}"; shift 2 ;;
@@ -71,10 +87,13 @@ done
 if [[ -n "$stale_days" ]] && ! [[ "$stale_days" =~ ^[0-9]+$ ]]; then
   echo "gh-mine: --stale 需要非负整数，得到 '$stale_days'" >&2; exit 2
 fi
+if ! [[ "$discussion_limit" =~ ^[1-9][0-9]*$ ]]; then
+  echo "gh-mine: --discussion-limit 需要正整数，得到 '$discussion_limit'" >&2; exit 2
+fi
 # 预计算 --stale 截止日期（一次；macOS date -v / GNU date -d 双兼容，失败则明确报错）
 stale_cutoff=""
 if [[ -n "$stale_days" ]]; then
-  stale_cutoff="$(date -v-${stale_days}d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d 2>/dev/null || true)"
+  stale_cutoff="$(date -v-"${stale_days}"d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d 2>/dev/null || true)"
   if [[ -z "$stale_cutoff" ]]; then
     echo "gh-mine: --stale ${stale_days} 超出 date 可计算范围" >&2; exit 2
   fi
@@ -84,6 +103,10 @@ if [[ -z "$account" ]]; then
   account="$(gh api user --jq '.login')" || {
     echo "gh-mine: 无法获取当前活跃账号，请先执行 gh auth login" >&2; exit 1; }
 fi
+if (( want_discussions == 1 )) && [[ -n "$scope" && -z "$repo" ]]; then
+  echo "gh-mine: --discussions/--hygiene 只能用于自己的仓库或 --repo；--authored/--assigned 不适用于 Discussion 枚举" >&2
+  exit 2
+fi
 
 # JSON 模式: 临时文件累积结果，退出时清理
 if (( json_mode )); then
@@ -91,12 +114,17 @@ if (( json_mode )); then
   trap 'rm -f "$json_tmp"' EXIT
 fi
 
+repo_full_name() {
+  local r="$repo"
+  [[ "$r" == *"/"* ]] || r="${account}/${r}"
+  printf '%s' "$r"
+}
+
 # 构造 search query（$1 = issue | pr）
 build_query() {
   local q="is:$1 is:open"
   if [[ -n "$repo" ]]; then
-    local r="$repo"; [[ "$r" == *"/"* ]] || r="${account}/${r}"
-    q="repo:${r} ${q}"
+    q="repo:$(repo_full_name) ${q}"
   else
     case "$scope" in
       author)   q="author:${account} ${q}" ;;
@@ -114,6 +142,40 @@ build_query() {
   printf '%s' "$q"
 }
 
+# 构造 closed issue query：正文/评论含 discussions/ 的 issue。
+build_moved_to_discussion_query() {
+  local q="is:issue is:closed discussions/ in:body,comments"
+  if [[ -n "$repo" ]]; then
+    q="repo:$(repo_full_name) ${q}"
+  else
+    case "$scope" in
+      author)   q="author:${account} ${q}" ;;
+      assignee) q="assignee:${account} ${q}" ;;
+      *)        q="user:${account} ${q}" ;;
+    esac
+  fi
+  if [[ -n "$stale_cutoff" ]]; then
+    q="${q} updated:<${stale_cutoff}"
+  fi
+  if [[ ${#labels[@]} -gt 0 ]]; then
+    local l
+    for l in "${labels[@]}"; do q="${q} label:\"${l}\""; done
+  fi
+  printf '%s' "$q"
+}
+
+# 输出启用 Discussions 的 repo full names。
+list_discussion_repos() {
+  if [[ -n "$repo" ]]; then
+    gh repo view "$(repo_full_name)" --json nameWithOwner,hasDiscussionsEnabled \
+      --jq 'select(.hasDiscussionsEnabled == true) | .nameWithOwner'
+    return 0
+  fi
+
+  gh repo list "$account" --limit 200 --json nameWithOwner,isFork,hasDiscussionsEnabled \
+    --jq '.[] | select(.isFork == false and .hasDiscussionsEnabled == true) | .nameWithOwner'
+}
+
 # 口径名（用于标题 / JSON scope 字段）
 scope_label() {
   if [[ -n "$repo" ]]; then
@@ -126,6 +188,108 @@ scope_label() {
       *)        printf '自己的仓库' ;;
     esac
   fi
+}
+
+# 收集 Discussion JSONL 到指定文件。
+collect_discussions() {
+  local out="$1"
+  local repo_full owner name resp
+
+  while IFS= read -r repo_full; do
+    [[ -z "$repo_full" ]] && continue
+    owner="${repo_full%%/*}"
+    name="${repo_full#*/}"
+    # The GraphQL query is single-quoted intentionally; variables are passed with -f/-F.
+    # shellcheck disable=SC2016
+    resp="$(gh api graphql \
+      -f owner="$owner" \
+      -f name="$name" \
+      -F first="$discussion_limit" \
+      -f query='
+        query($owner: String!, $name: String!, $first: Int!) {
+          repository(owner: $owner, name: $name) {
+            discussions(first: $first, orderBy: {field: UPDATED_AT, direction: DESC}) {
+              nodes {
+                number
+                title
+                url
+                createdAt
+                updatedAt
+                category { name }
+                author { login }
+              }
+            }
+          }
+        }')"
+    jq -c \
+      --arg scope "$(scope_label)" \
+      --arg repo_name "$name" \
+      --arg cutoff "$stale_cutoff" \
+      '.data.repository.discussions.nodes[]
+       | select($cutoff == "" or (.updatedAt[0:10] < $cutoff))
+       | {scope:$scope, kind:"discussion", repo:$repo_name, number, title, url,
+          state:"open", updated_at:.updatedAt, created_at:.createdAt,
+          category:(.category.name // null), author:(.author.login // null)}' \
+      <<<"$resp" >> "$out"
+  done < <(list_discussion_repos)
+}
+
+# 打印 Discussions。
+print_discussions() {
+  local tmp total
+  tmp="$(mktemp "${TMPDIR:-/tmp}/gh-mine-discussions.XXXXXX")"
+  collect_discussions "$tmp"
+
+  if (( json_mode )); then
+    cat "$tmp" >> "$json_tmp"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  total="$(wc -l < "$tmp" | tr -d ' ')"
+  printf '\n【%s · Discussions】 %s 条\n' "$(scope_label)" "$total"
+  if (( total > 0 )); then
+    jq -s -r '
+      group_by(.repo)
+      | .[]
+      | "  " + .[0].repo + " (" + (length | tostring) + ")",
+        (.[] | "    - #" + (.number | tostring) + " [" + (.category // "-") + "] " + .title)
+    ' "$tmp"
+  fi
+  rm -f "$tmp"
+}
+
+# 打印关闭后迁移到 Discussion 的 issue 线索。
+print_moved_to_discussion() {
+  local q encoded resp total
+  q="$(build_moved_to_discussion_query)"
+  encoded="$(jq -rn --arg s "$q" '$s|@uri')"
+  resp="$(gh api "search/issues?q=${encoded}&per_page=100")"
+  total="$(jq -r '.total_count' <<<"$resp")"
+
+  if (( json_mode )); then
+    if (( total > 0 )); then
+      jq -c --arg scope "$(scope_label)" \
+        '.items[]
+         | {scope:$scope, kind:"moved_to_discussion",
+            repo:(.repository_url|split("/")|.[-1]),
+            number, title, url:.html_url, state, updated_at, closed_at}' \
+        <<<"$resp" >> "$json_tmp"
+    fi
+    return 0
+  fi
+
+  printf '\n【%s · moved-to-Discussion closed Issue】 %s 条\n' "$(scope_label)" "$total"
+  if (( total == 0 )); then return 0; fi
+  if (( total > 100 )); then
+    printf '  (注意: 总数 %s 超过 100，下面仅列前 100 条)\n' "$total" >&2
+  fi
+  jq -c '.items[]' <<<"$resp" | jq -s -r '
+    group_by(.repository_url | split("/") | .[-1])
+    | .[]
+    | "  " + (.[0].repository_url | split("/") | .[-1]) + " (" + (length | tostring) + ")",
+      (.[] | "    - #" + (.number | tostring) + " " + .title)
+  '
 }
 
 # 打印一类（$1 = issue|pr 用于 query 和 JSON kind; $2 = 标题标签）
@@ -164,6 +328,8 @@ if (( ! json_mode )); then
 fi
 if (( want_issues == 1 )); then print_detail issue Issue; fi
 if (( want_prs == 1 ));    then print_detail pr PR; fi
+if (( want_discussions == 1 )); then print_discussions; fi
+if (( want_moved_to_discussion == 1 )); then print_moved_to_discussion; fi
 
 if (( json_mode )); then
   # slurp 成 JSON 数组；无结果输出 []

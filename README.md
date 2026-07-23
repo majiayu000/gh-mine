@@ -85,6 +85,8 @@ The default output is one Unicode table with fixed columns:
 The `#` column is right-aligned, unsafe control whitespace is normalized, and
 long titles are truncated at Unicode code-point boundaries. TTY headers use
 restrained cyan/bold styling; pipes, `NO_COLOR`, and JSON never contain ANSI.
+If the terminal is too narrow, the table expands past it to preserve the full
+repository name and a readable Title column of at least 20 characters.
 Use `--plain` for the legacy grouped view. `--plain --json` is invalid.
 
 ### Example output

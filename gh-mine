@@ -677,7 +677,7 @@ render_plain() {
           "】 " + (length | tostring) + " 条",
         (group_by(.repo_full_name)[]
           | "  " + .[0].repo_full_name + " (" + (length | tostring) + ")",
-            (.[] | "    - #" + (.number | tostring) + " " +
+            (.[] | "    - #" + (.number | tostring) + " " + (if .kind == "discussion" then "[" + (.category // "-") + "] " else "" end) +
               ((.title // "") | clean)))
     ' "$items_file"
   } >"$out" || { fail "plain renderer 失败"; return 1; }
@@ -685,7 +685,7 @@ render_plain() {
 render_table() {
   local out="$1"
   local columns=120 type_width=10 updated_width=10
-  local repo_width number_width state_width title_width top middle bottom
+  local repo_width number_width state_width title_width minimum_columns top middle bottom
   local header_type header_repo header_number header_state header_updated
   local header_title
   local use_color=0
@@ -709,9 +709,9 @@ render_table() {
      (.[] | (.state | tostring | gsub("[\r\n\t]"; " ") | length))]
     | max
   ' "$items_file")" || { fail "表格状态宽度计算失败"; return 1; }
+  minimum_columns=$((type_width + repo_width + number_width + state_width + updated_width + 20 + 19)); (( columns >= minimum_columns )) || columns=$minimum_columns
   title_width=$((columns - type_width - repo_width - number_width -
                  state_width - updated_width - 19))
-  (( title_width >= 20 )) || title_width=20
   top="┌$(repeat_char "─" "$((type_width + 2))")┬$(repeat_char "─" "$((repo_width + 2))")┬$(repeat_char "─" "$((number_width + 2))")┬$(repeat_char "─" "$((state_width + 2))")┬$(repeat_char "─" "$((updated_width + 2))")┬$(repeat_char "─" "$((title_width + 2))")┐"
   middle="├$(repeat_char "─" "$((type_width + 2))")┼$(repeat_char "─" "$((repo_width + 2))")┼$(repeat_char "─" "$((number_width + 2))")┼$(repeat_char "─" "$((state_width + 2))")┼$(repeat_char "─" "$((updated_width + 2))")┼$(repeat_char "─" "$((title_width + 2))")┤"
   bottom="└$(repeat_char "─" "$((type_width + 2))")┴$(repeat_char "─" "$((repo_width + 2))")┴$(repeat_char "─" "$((number_width + 2))")┴$(repeat_char "─" "$((state_width + 2))")┴$(repeat_char "─" "$((updated_width + 2))")┴$(repeat_char "─" "$((title_width + 2))")┘"

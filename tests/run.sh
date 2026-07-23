@@ -88,7 +88,12 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 fi
 exit 46
 FAKE
-  chmod +x "${CASE_DIR}/bin/gh"
+  cat >"${CASE_DIR}/bin/tput" <<'TPUT'
+#!/usr/bin/env bash
+[[ "${1:-}" == "cols" ]] || exit 1
+printf '%s\n' "${FAKE_TPUT_COLS}"
+TPUT
+  chmod +x "${CASE_DIR}/bin/gh" "${CASE_DIR}/bin/tput"
 }
 
 run_cli() {
@@ -97,6 +102,26 @@ run_cli() {
     /bin/bash "$CLI" "$@" >"${CASE_DIR}/stdout" 2>"${CASE_DIR}/stderr" ||
     status=$?
   printf '%s' "$status"
+}
+
+run_tty_cli() {
+  local output="$1" columns="$2"
+  shift 2
+  local command="" quoted argument
+  command -v script >/dev/null 2>&1 || fail_test "pseudo TTY" "script missing"
+  if script --version >/dev/null 2>&1; then
+    for argument in env -u NO_COLOR "PATH=${CASE_DIR}/bin:${PATH}" \
+      "FAKE_GH_DIR=${CASE_DIR}" "FAKE_TPUT_COLS=${columns}" \
+      /bin/bash "$CLI" "$@"; do
+      printf -v quoted '%q' "$argument"
+      command="${command} ${quoted}"
+    done
+    script -q -c "$command" "$output" >/dev/null 2>&1
+  else
+    script -q "$output" env -u NO_COLOR PATH="${CASE_DIR}/bin:${PATH}" \
+      FAKE_GH_DIR="$CASE_DIR" FAKE_TPUT_COLS="$columns" \
+      /bin/bash "$CLI" "$@" >/dev/null 2>&1
+  fi
 }
 
 make_rest() {
@@ -468,6 +493,30 @@ test_table_width_and_repo_identity() {
   assert_contains "${CASE_DIR}/stdout" "two/same" "second owner displayed"
   iconv -f UTF-8 -t UTF-8 "${CASE_DIR}/stdout" >"${CASE_DIR}/iconv.out" ||
     fail_test "table UTF-8" "invalid UTF-8 after truncation"
+
+  run_tty_cli "${CASE_DIR}/normal.tty" 100 --account me --issues ||
+    fail_test "normal-width pseudo TTY" "command failed"
+  normal_length="$(jq -Rr '
+    rtrimstr("\r") | select(index("┌") != null) |
+    index("┌") as $start | .[$start:] | length
+  ' "${CASE_DIR}/normal.tty" | sed -n '1p')"
+  assert_eq 100 "$normal_length" "normal border matches tput columns"
+
+  begin_case table_narrow
+  full_repo="long-owner/repository-with-a-very-long-name"
+  make_rest "${CASE_DIR}/fixtures/rest-issue-1.json" 1 false 1 \
+    long-owner repository-with-a-very-long-name 123
+  run_tty_cli "${CASE_DIR}/narrow.tty" 20 --account me --issues ||
+    fail_test "narrow pseudo TTY" "command failed"
+  narrow_length="$(jq -Rr '
+    rtrimstr("\r") | select(index("┌") != null) |
+    index("┌") as $start | .[$start:] | length
+  ' "${CASE_DIR}/narrow.tty" | sed -n '1p')"
+  minimum_columns=$((10 + ${#full_repo} + 3 + 5 + 10 + 20 + 19))
+  assert_eq "$minimum_columns" "$narrow_length" \
+    "narrow border expands to readable minimum"
+  assert_contains "${CASE_DIR}/narrow.tty" "$full_repo" \
+    "narrow table preserves full repository"
   pass table_width_and_repo_identity
 }
 
@@ -486,19 +535,11 @@ test_color_modes() {
   if LC_ALL=C grep "$(printf '\033')" "${CASE_DIR}/nocolor" >/dev/null; then
     fail_test "NO_COLOR" "ANSI present"
   fi
-  if command -v script >/dev/null 2>&1; then
-    tty_file="${CASE_DIR}/tty.out"
-    if script --version >/dev/null 2>&1; then
-      script -q -c "env -u NO_COLOR PATH='${CASE_DIR}/bin:${PATH}' FAKE_GH_DIR='${CASE_DIR}' /bin/bash '${CLI}' --account me --issues" \
-        "$tty_file" >/dev/null 2>&1
-    else
-      script -q "$tty_file" env -u NO_COLOR PATH="${CASE_DIR}/bin:${PATH}" \
-        FAKE_GH_DIR="$CASE_DIR" /bin/bash "$CLI" --account me --issues \
-        >/dev/null 2>&1
-    fi
-    LC_ALL=C grep -F "$(printf '\033[1;36m')" "$tty_file" >/dev/null ||
-      fail_test "TTY color" "cyan/bold header missing"
-  fi
+  tty_file="${CASE_DIR}/tty.out"
+  run_tty_cli "$tty_file" 120 --account me --issues ||
+    fail_test "color pseudo TTY" "command failed"
+  LC_ALL=C grep -F "$(printf '\033[1;36m')" "$tty_file" >/dev/null ||
+    fail_test "TTY color" "cyan/bold header missing"
   pass color_modes
 }
 
@@ -516,6 +557,20 @@ test_renderer_modes() {
   assert_contains "${CASE_DIR}/stdout" "0 items" "empty plain explicit"
   status="$(run_cli --account me --plain --json)"
   assert_eq 2 "$status" "plain+json rejected"
+
+  begin_case discussion_plain
+  general="$(discussion_node 1 "2024-01-01T00:00:00Z" false null)"
+  uncategorized="$(discussion_node 2 "2024-01-01T00:00:00Z" false null |
+    jq '.category = null')"
+  repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 2 \
+    "[$general,$uncategorized]" false null
+  status="$(run_cli --account me --repo acme/repo --discussions \
+    --discussion-limit 2 --plain)"
+  assert_eq 0 "$status" "non-empty Discussion plain status"
+  assert_contains "${CASE_DIR}/stdout" "#1 [General] discussion 1" \
+    "Discussion plain includes category"
+  assert_contains "${CASE_DIR}/stdout" "#2 [-] discussion 2" \
+    "Discussion plain uses missing-category fallback"
   pass renderer_modes
 }
 

@@ -1,341 +1,800 @@
 #!/usr/bin/env bash
-# gh-mine —— 列出自己的 open issue / PR / Discussion hygiene
-#
-# 默认口径: owner 是当前活跃账号的仓库里的 open issue / PR（"自己的仓库"，不含外部仓库）
-# 依赖: gh（已登录）, jq
-
 set -euo pipefail
-
 usage() {
   cat <<'EOF'
 gh-mine —— 列出自己的 open issue / PR / Discussion hygiene
-
 用法:
   gh-mine                       默认: 自己仓库的 open issue + PR
-  gh-mine -i | --issues         只看 issue
-  gh-mine -p | --prs            只看 PR
-  gh-mine --discussions         只看启用 Discussions 的仓库里的最新 Discussions
+  gh-mine --issues | --prs      只看 issue / PR
+  gh-mine --discussions         只看启用 Discussions 的仓库里的 Discussions
   gh-mine --moved-to-discussion 只看已关闭且正文/评论含 discussions/ 的 issue
   gh-mine --hygiene             Discussion + moved-to-discussion 监控视图
-  gh-mine --discussion-limit N  每个仓库最多读取 N 条 Discussion（默认 20）
-  gh-mine --authored            口径: 我创建的（跨所有仓库，含外部）
-  gh-mine --assigned            口径: 分配给我的（跨所有仓库）
+  gh-mine --discussion-limit N  每个仓库最多输出 N 条 Discussion（默认 20）
+  gh-mine --authored|--assigned 我创建的 / 分配给我的（跨所有仓库）
   gh-mine --repo <owner/name>   限定单个仓库（可省略 owner）
-  gh-mine --stale <days>        只看超过 <days> 天未更新的
-  gh-mine --label <name>        按标签过滤（可多次，AND 关系）
-  gh-mine --account <login>     指定账号（默认取当前活跃账号）
-  gh-mine --json                输出 JSON 数组（便于 jq / 管道消费）
-  gh-mine -h | --help
-
-口径:
-  默认        user:<login>      自己仓库（owner 是自己）
-  --authored  author:<login>    我创建的，跨所有仓库
-  --assigned  assignee:<login>  分配给我的，跨所有仓库
-
-JSON 模式 (--json):
-  输出扁平数组。issue/PR 项含 scope/kind/repo/number/title/url/state/updated_at。
-  Discussion 项额外含 created_at/category/author；moved-to-discussion 项额外含 closed_at。
-  例: gh-mine --json | jq '.[] | select(.kind=="issue") | .repo'
+  gh-mine --stale D | --label N 过期天数 / 标签（可重复，AND）
+  gh-mine --account <login>     指定账号；-h/--help 显示帮助
+  gh-mine --plain | --json      旧版分组文本 / JSON 数组
+默认输出 Unicode 表格；--json 保留 repo 并新增 owner/repo_full_name。
 EOF
 }
-
-want_issues=1
-want_prs=1
-want_discussions=0
-want_moved_to_discussion=0
-scope=""            # "" | author | assignee
-repo=""
-account=""
-stale_days=""
-labels=()
-json_mode=0
-json_tmp=""
-discussion_limit=20
-
+want_issues=1 want_prs=1 want_discussions=0 want_moved_to_discussion=0
+scope="" repo="" account="" stale_days="" stale_cutoff=""
+labels=() labels_count=0
+json_mode=0 plain_mode=0 discussion_limit=20
+run_dir="" items_file=""
+fail() {
+  printf 'gh-mine: %s\n' "$*" >&2; return 1
+}
+usage_error() {
+  printf 'gh-mine: %s\n' "$*" >&2; exit 2
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -i|--issues) want_issues=1; want_prs=0; shift ;;
-    -p|--prs)    want_prs=1; want_issues=0; shift ;;
-    --discussions)
-      want_issues=0; want_prs=0; want_discussions=1; shift ;;
+    -p|--prs) want_prs=1; want_issues=0; shift ;;
+    --discussions) want_issues=0; want_prs=0; want_discussions=1; shift ;;
     --moved-to-discussion)
       want_issues=0; want_prs=0; want_moved_to_discussion=1; shift ;;
     --hygiene)
-      want_issues=0; want_prs=0; want_discussions=1; want_moved_to_discussion=1; shift ;;
-    --discussion-limit) discussion_limit="${2:?--discussion-limit 需要值}"; shift 2 ;;
+      want_issues=0; want_prs=0; want_discussions=1
+      want_moved_to_discussion=1; shift ;;
+    --discussion-limit) [[ $# -ge 2 ]] ||
+      usage_error "--discussion-limit 需要值"
+      discussion_limit="$2"; shift 2 ;;
     --discussion-limit=*) discussion_limit="${1#*=}"; shift ;;
-    --authored)  scope="author"; shift ;;
-    --assigned)  scope="assignee"; shift ;;
-    --repo)      repo="${2:?--repo 需要值}"; shift 2 ;;
-    --repo=*)    repo="${1#*=}"; shift ;;
-    --stale)     stale_days="${2:?--stale 需要值}"; shift 2 ;;
-    --stale=*)   stale_days="${1#*=}"; shift ;;
-    --label)     labels+=("${2:?--label 需要值}"); shift 2 ;;
-    --label=*)   labels+=("${1#*=}"); shift ;;
-    --account)   account="${2:?--account 需要值}"; shift 2 ;;
+    --authored) scope="author"; shift ;;
+    --assigned) scope="assignee"; shift ;;
+    --repo) [[ $# -ge 2 ]] || usage_error "--repo 需要值"
+      repo="$2"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; shift ;;
+    --stale) [[ $# -ge 2 ]] || usage_error "--stale 需要值"
+      stale_days="$2"; shift 2 ;;
+    --stale=*) stale_days="${1#*=}"; shift ;;
+    --label) [[ $# -ge 2 ]] || usage_error "--label 需要值"
+      labels+=("$2"); labels_count=$((labels_count + 1)); shift 2 ;;
+    --label=*) labels+=("${1#*=}"); labels_count=$((labels_count + 1)); shift ;;
+    --account) [[ $# -ge 2 ]] || usage_error "--account 需要值"
+      account="$2"; shift 2 ;;
     --account=*) account="${1#*=}"; shift ;;
-    --json)      json_mode=1; shift ;;
-    -h|--help)   usage; exit 0 ;;
-    *) echo "gh-mine: 未知参数 '$1'" >&2; usage >&2; exit 2 ;;
+    --plain) plain_mode=1; shift ;;
+    --json) json_mode=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage_error "未知参数 '$1'" ;;
   esac
 done
-
-for c in gh jq; do
-  command -v "$c" >/dev/null 2>&1 || { echo "gh-mine: 缺少依赖 '$c'" >&2; exit 1; }
-done
-
+(( json_mode == 0 || plain_mode == 0 )) ||
+  usage_error "--plain 与 --json 不能同时使用"
+[[ "$discussion_limit" =~ ^[1-9][0-9]*$ ]] ||
+  usage_error "--discussion-limit 需要正整数，得到 '$discussion_limit'"
 if [[ -n "$stale_days" ]] && ! [[ "$stale_days" =~ ^[0-9]+$ ]]; then
-  echo "gh-mine: --stale 需要非负整数，得到 '$stale_days'" >&2; exit 2
+  usage_error "--stale 需要非负整数，得到 '$stale_days'"
 fi
-if ! [[ "$discussion_limit" =~ ^[1-9][0-9]*$ ]]; then
-  echo "gh-mine: --discussion-limit 需要正整数，得到 '$discussion_limit'" >&2; exit 2
+if [[ -n "$repo" ]] &&
+   ! [[ "$repo" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$ ]]; then
+  usage_error "--repo 需要 name 或 owner/name，得到 '$repo'"
 fi
-# 预计算 --stale 截止日期（一次；macOS date -v / GNU date -d 双兼容，失败则明确报错）
-stale_cutoff=""
+if [[ -n "$account" ]] && ! [[ "$account" =~ ^[A-Za-z0-9-]+$ ]]; then
+  usage_error "--account 不是有效的 GitHub login"
+fi
+for label_value in "${labels[@]+"${labels[@]}"}"; do
+  [[ -n "$label_value" ]] || usage_error "--label 不能是空字符串"
+  case "$label_value" in
+    *$'\n'*|*$'\r'*|*$'\t'*) usage_error "--label 不能包含控制字符" ;;
+  esac
+done
+if (( want_discussions == 1 )) && [[ -n "$scope" ]]; then
+  usage_error "--discussions/--hygiene 不支持 --authored/--assigned（即使同时使用 --repo）"
+fi
+for dependency in gh jq; do
+  command -v "$dependency" >/dev/null 2>&1 ||
+    { printf "gh-mine: 缺少依赖 '%s'\n" "$dependency" >&2; exit 1; }
+done
 if [[ -n "$stale_days" ]]; then
-  stale_cutoff="$(date -v-"${stale_days}"d +%Y-%m-%d 2>/dev/null || date -d "${stale_days} days ago" +%Y-%m-%d 2>/dev/null || true)"
-  if [[ -z "$stale_cutoff" ]]; then
-    echo "gh-mine: --stale ${stale_days} 超出 date 可计算范围" >&2; exit 2
-  fi
+  stale_cutoff="$(
+    date -v-"${stale_days}"d +%Y-%m-%d 2>/dev/null ||
+      date -d "${stale_days} days ago" +%Y-%m-%d 2>/dev/null
+  )" || usage_error "--stale ${stale_days} 超出 date 可计算范围"
+  [[ -n "$stale_cutoff" ]] ||
+    usage_error "--stale ${stale_days} 超出 date 可计算范围"
 fi
-
 if [[ -z "$account" ]]; then
-  account="$(gh api user --jq '.login')" || {
-    echo "gh-mine: 无法获取当前活跃账号，请先执行 gh auth login" >&2; exit 1; }
+  if ! account="$(gh api user --jq '.login')"; then
+    fail "无法获取当前活跃账号，请先执行 gh auth login"
+    exit 1
+  fi
+  [[ "$account" =~ ^[A-Za-z0-9-]+$ ]] ||
+    { fail "当前活跃账号 login 无效"; exit 1; }
 fi
-if (( want_discussions == 1 )) && [[ -n "$scope" && -z "$repo" ]]; then
-  echo "gh-mine: --discussions/--hygiene 只能用于自己的仓库或 --repo；--authored/--assigned 不适用于 Discussion 枚举" >&2
-  exit 2
-fi
-
-# JSON 模式: 临时文件累积结果，退出时清理
-if (( json_mode )); then
-  json_tmp="$(mktemp "${TMPDIR:-/tmp}/gh-mine.XXXXXX")"
-  trap 'rm -f "$json_tmp"' EXIT
-fi
-
+run_dir="$(mktemp -d "${TMPDIR:-/tmp}/gh-mine.XXXXXX")"
+trap 'rm -rf "$run_dir"' EXIT HUP INT TERM
+items_file="${run_dir}/items.jsonl"
+: >"$items_file"
 repo_full_name() {
-  local r="$repo"
-  [[ "$r" == *"/"* ]] || r="${account}/${r}"
-  printf '%s' "$r"
-}
-
-# 构造 search query（$1 = issue | pr）
-build_query() {
-  local q="is:$1 is:open"
-  if [[ -n "$repo" ]]; then
-    q="repo:$(repo_full_name) ${q}"
+  if [[ "$repo" == */* ]]; then
+    printf '%s' "$repo"
   else
-    case "$scope" in
-      author)   q="author:${account} ${q}" ;;
-      assignee) q="assignee:${account} ${q}" ;;
-      *)        q="user:${account} ${q}" ;;
-    esac
+    printf '%s/%s' "$account" "$repo"
   fi
-  if [[ -n "$stale_cutoff" ]]; then
-    q="${q} updated:<${stale_cutoff}"
-  fi
-  if [[ ${#labels[@]} -gt 0 ]]; then
-    local l
-    for l in "${labels[@]}"; do q="${q} label:\"${l}\""; done
-  fi
-  printf '%s' "$q"
 }
-
-# 构造 closed issue query：正文/评论含 discussions/ 的 issue。
-build_moved_to_discussion_query() {
-  local q="is:issue is:closed discussions/ in:body,comments"
-  if [[ -n "$repo" ]]; then
-    q="repo:$(repo_full_name) ${q}"
-  else
-    case "$scope" in
-      author)   q="author:${account} ${q}" ;;
-      assignee) q="assignee:${account} ${q}" ;;
-      *)        q="user:${account} ${q}" ;;
-    esac
-  fi
-  if [[ -n "$stale_cutoff" ]]; then
-    q="${q} updated:<${stale_cutoff}"
-  fi
-  if [[ ${#labels[@]} -gt 0 ]]; then
-    local l
-    for l in "${labels[@]}"; do q="${q} label:\"${l}\""; done
-  fi
-  printf '%s' "$q"
-}
-
-# 输出启用 Discussions 的 repo full names。
-list_discussion_repos() {
-  if [[ -n "$repo" ]]; then
-    gh repo view "$(repo_full_name)" --json nameWithOwner,hasDiscussionsEnabled \
-      --jq 'select(.hasDiscussionsEnabled == true) | .nameWithOwner'
-    return 0
-  fi
-
-  gh repo list "$account" --limit 200 --json nameWithOwner,isFork,hasDiscussionsEnabled \
-    --jq '.[] | select(.isFork == false and .hasDiscussionsEnabled == true) | .nameWithOwner'
-}
-
-# 口径名（用于标题 / JSON scope 字段）
 scope_label() {
   if [[ -n "$repo" ]]; then
-    local r="$repo"; [[ "$r" == *"/"* ]] || r="${account}/${r}"
-    printf '仓库 %s' "$r"
+    printf '仓库 %s' "$(repo_full_name)"
   else
     case "$scope" in
-      author)   printf '我创建的' ;;
+      author) printf '我创建的' ;;
       assignee) printf '分配给我的' ;;
-      *)        printf '自己的仓库' ;;
+      *) printf '自己的仓库' ;;
     esac
   fi
 }
-
-# 收集 Discussion JSONL 到指定文件。
-collect_discussions() {
-  local out="$1"
-  local repo_full owner name resp
-
-  while IFS= read -r repo_full; do
-    [[ -z "$repo_full" ]] && continue
-    owner="${repo_full%%/*}"
-    name="${repo_full#*/}"
-    # The GraphQL query is single-quoted intentionally; variables are passed with -f/-F.
-    # shellcheck disable=SC2016
-    resp="$(gh api graphql \
-      -f owner="$owner" \
-      -f name="$name" \
-      -F first="$discussion_limit" \
-      -f query='
-        query($owner: String!, $name: String!, $first: Int!) {
-          repository(owner: $owner, name: $name) {
-            discussions(first: $first, orderBy: {field: UPDATED_AT, direction: DESC}) {
-              nodes {
-                number
-                title
-                url
-                createdAt
-                updatedAt
-                category { name }
-                author { login }
-              }
-            }
-          }
-        }')"
-    jq -c \
-      --arg scope "$(scope_label)" \
-      --arg repo_name "$name" \
-      --arg cutoff "$stale_cutoff" \
-      '.data.repository.discussions.nodes[]
-       | select($cutoff == "" or (.updatedAt[0:10] < $cutoff))
-       | {scope:$scope, kind:"discussion", repo:$repo_name, number, title, url,
-          state:"open", updated_at:.updatedAt, created_at:.createdAt,
-          category:(.category.name // null), author:(.author.login // null)}' \
-      <<<"$resp" >> "$out"
-  done < <(list_discussion_repos)
+search_quote() {
+  local escaped="$1"
+  escaped="${escaped//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf '"%s"' "$escaped"
 }
-
-# 打印 Discussions。
-print_discussions() {
-  local tmp total
-  tmp="$(mktemp "${TMPDIR:-/tmp}/gh-mine-discussions.XXXXXX")"
-  collect_discussions "$tmp"
-
-  if (( json_mode )); then
-    cat "$tmp" >> "$json_tmp"
-    rm -f "$tmp"
-    return 0
+append_search_filters() {
+  local query="$1"
+  local label_value
+  if [[ -n "$stale_cutoff" ]]; then
+    query="${query} updated:<${stale_cutoff}"
   fi
-
-  total="$(wc -l < "$tmp" | tr -d ' ')"
-  printf '\n【%s · Discussions】 %s 条\n' "$(scope_label)" "$total"
-  if (( total > 0 )); then
-    jq -s -r '
-      group_by(.repo)
-      | .[]
-      | "  " + .[0].repo + " (" + (length | tostring) + ")",
-        (.[] | "    - #" + (.number | tostring) + " [" + (.category // "-") + "] " + .title)
-    ' "$tmp"
-  fi
-  rm -f "$tmp"
+  for label_value in "${labels[@]+"${labels[@]}"}"; do
+    query="${query} label:$(search_quote "$label_value")"
+  done
+  printf '%s' "$query"
 }
-
-# 打印关闭后迁移到 Discussion 的 issue 线索。
-print_moved_to_discussion() {
-  local q encoded resp total
-  q="$(build_moved_to_discussion_query)"
-  encoded="$(jq -rn --arg s "$q" '$s|@uri')"
-  resp="$(gh api "search/issues?q=${encoded}&per_page=100")"
-  total="$(jq -r '.total_count' <<<"$resp")"
-
-  if (( json_mode )); then
-    if (( total > 0 )); then
-      jq -c --arg scope "$(scope_label)" \
-        '.items[]
-         | {scope:$scope, kind:"moved_to_discussion",
-            repo:(.repository_url|split("/")|.[-1]),
-            number, title, url:.html_url, state, updated_at, closed_at}' \
-        <<<"$resp" >> "$json_tmp"
-    fi
-    return 0
-  fi
-
-  printf '\n【%s · moved-to-Discussion closed Issue】 %s 条\n' "$(scope_label)" "$total"
-  if (( total == 0 )); then return 0; fi
-  if (( total > 100 )); then
-    printf '  (注意: 总数 %s 超过 100，下面仅列前 100 条)\n' "$total" >&2
-  fi
-  jq -c '.items[]' <<<"$resp" | jq -s -r '
-    group_by(.repository_url | split("/") | .[-1])
-    | .[]
-    | "  " + (.[0].repository_url | split("/") | .[-1]) + " (" + (length | tostring) + ")",
-      (.[] | "    - #" + (.number | tostring) + " " + .title)
-  '
-}
-
-# 打印一类（$1 = issue|pr 用于 query 和 JSON kind; $2 = 标题标签）
-print_detail() {
-  local kind="$1" label="$2"
-  local q encoded resp total
-  q="$(build_query "$kind")"
-  encoded="$(jq -rn --arg s "$q" '$s|@uri')"
-  resp="$(gh api "search/issues?q=${encoded}&per_page=100")"
-  total="$(jq -r '.total_count' <<<"$resp")"
-
-  if (( json_mode )); then
-    if (( total > 0 )); then
-      jq -c --arg kind "$kind" --arg scope "$(scope_label)" \
-        '.items[] | {scope:$scope, kind:$kind, repo:(.repository_url|split("/")|.[-1]),
-                     number, title, url:.html_url, state, updated_at}' <<<"$resp" >> "$json_tmp"
-    fi
-    return 0
-  fi
-
-  printf '\n【%s · open %s】 %s 条\n' "$(scope_label)" "$label" "$total"
-  if (( total == 0 )); then return 0; fi
-  if (( total > 100 )); then
-    printf '  (注意: 总数 %s 超过 100，下面仅列前 100 条)\n' "$total" >&2
-  fi
-  jq -c '.items[]' <<<"$resp" | jq -s -r '
-    group_by(.repository_url | split("/") | .[-1])
-    | .[]
-    | "  " + (.[0].repository_url | split("/") | .[-1]) + " (" + (length | tostring) + ")",
-      (.[] | "    - #" + (.number | tostring) + " " + .title)
-  '
-}
-
-if (( ! json_mode )); then
-  printf '账号: %s\n' "$account"
-fi
-if (( want_issues == 1 )); then print_detail issue Issue; fi
-if (( want_prs == 1 ));    then print_detail pr PR; fi
-if (( want_discussions == 1 )); then print_discussions; fi
-if (( want_moved_to_discussion == 1 )); then print_moved_to_discussion; fi
-
-if (( json_mode )); then
-  # slurp 成 JSON 数组；无结果输出 []
-  if [[ -s "$json_tmp" ]]; then
-    jq -s '.' "$json_tmp"
+build_query() {
+  local search_kind="$1"
+  local query="is:${search_kind} is:open"
+  if [[ -n "$repo" ]]; then
+    query="repo:$(repo_full_name) ${query}"
   else
-    printf '[]\n'
+    query="user:${account} ${query}"
   fi
+  case "$scope" in
+    author) query="author:${account} ${query}" ;;
+    assignee) query="assignee:${account} ${query}" ;;
+  esac
+  append_search_filters "$query"
+}
+build_moved_query() {
+  local query="is:issue is:closed discussions/ in:body,comments"
+  if [[ -n "$repo" ]]; then
+    query="repo:$(repo_full_name) ${query}"
+  else
+    query="user:${account} ${query}"
+  fi
+  case "$scope" in
+    author) query="author:${account} ${query}" ;;
+    assignee) query="assignee:${account} ${query}" ;;
+  esac
+  append_search_filters "$query"
+}
+collect_search_pages() {
+  local query="$1"
+  local kind="$2"
+  local out="$3"
+  local page=1 total=-1 collected=0
+  local page_count page_total encoded response_file projected_file
+  encoded="$(jq -rn --arg value "$query" '$value | @uri')" ||
+    { fail "REST Search query 编码失败 (${kind})"; return 1; }
+  projected_file="${run_dir}/search-${kind}.jsonl"
+  : >"$projected_file"
+  while :; do
+    response_file="${run_dir}/search-${kind}-${page}.json"
+    if ! gh api "search/issues?q=${encoded}&per_page=100&page=${page}" \
+      >"$response_file"; then
+      fail "REST Search 第 ${page} 页请求失败 (${kind})"
+      return 1
+    fi
+    if ! jq -e '
+      type=="object" and
+      (.total_count|type=="number" and .>=0 and floor==.) and
+      (.incomplete_results|type=="boolean") and (.items|type=="array") and
+      all(.items[]; type=="object" and
+        (.repository_url|type=="string" and test("/repos/[^/]+/[^/]+$")) and
+        (.number|type=="number") and
+        ((.title==null) or (.title|type=="string")) and
+        (.html_url|type=="string") and (.state|type=="string") and
+        (.updated_at|type=="string"))
+    ' "$response_file" >/dev/null; then
+      fail "REST Search 第 ${page} 页响应结构无效 (${kind})"
+      return 1
+    fi
+    if [[ "$(jq -r '.incomplete_results' "$response_file")" == "true" ]]; then
+      fail "REST Search 返回 incomplete_results (${kind})；请用 --repo/--label/--stale 缩小查询"
+      return 1
+    fi
+    page_total="$(jq -r '.total_count' "$response_file")"
+    if (( page == 1 )); then
+      total="$page_total"
+      if (( total > 1000 )); then
+        fail "REST Search 命中 ${total} 条，超过可完整访问的 1000 条上限；请缩小查询"
+        return 1
+      fi
+    elif (( page_total != total )); then
+      fail "REST Search 分页期间 total_count 发生变化 (${kind})"
+      return 1
+    fi
+    page_count="$(jq '.items | length' "$response_file")"
+    if (( collected + page_count > total )); then
+      fail "REST Search 返回条目数超过 total_count (${kind})"
+      return 1
+    fi
+    if ! jq -c --arg scope "$(scope_label)" --arg kind "$kind" '
+      .items[]
+      | (.repository_url | split("/") | .[-2:]) as $repo_parts
+      | {
+          scope:$scope, kind:$kind, owner:$repo_parts[0], repo:$repo_parts[1],
+          repo_full_name:($repo_parts | join("/")), number:.number,
+          title:(.title // ""), url:.html_url, state:.state,
+          updated_at:.updated_at
+        }
+      | if $kind == "moved_to_discussion"
+        then . + {closed_at: (.closed_at // null)}
+        else .
+        end
+    ' "$response_file" >>"$projected_file"; then
+      fail "REST Search 第 ${page} 页投影失败 (${kind})"
+      return 1
+    fi
+    collected=$((collected + page_count))
+    (( collected == total )) && break
+    if (( page_count == 0 || page_count < 100 )); then
+      fail "REST Search 在收集完整结果前提前终止 (${collected}/${total}, ${kind})"
+      return 1
+    fi
+    if (( page >= 10 )); then
+      fail "REST Search 无法在服务端 1000 条上限内收集完整结果 (${kind})"
+      return 1
+    fi
+    page=$((page + 1))
+  done
+  if ! cat "$projected_file" >>"$out"; then
+    fail "无法暂存 REST Search 结果 (${kind})"
+    return 1
+  fi
+}
+graphql_response_ok() {
+  jq -e 'type=="object" and ((has("errors")|not) or .errors==null or
+    (.errors|type=="array" and length==0))' "$1" >/dev/null
+}
+discussion_first_size() {
+  (( discussion_limit < 100 )) && printf '%s' "$discussion_limit" || printf '100'
+}
+fetch_discussion_labels() {
+  local repo_full="$1"
+  local number="$2"
+  local node_file="$3"
+  local names_file="$4"
+  local owner="${repo_full%%/*}"
+  local name="${repo_full#*/}"
+  local total count has_next cursor first response page_count requested
+  local label_state="${names_file}.state.json"
+  : >"$names_file"
+  jq -c '.labels.nodes[].name' "$node_file" >>"$names_file" ||
+    { fail "Discussion #${number} 标签投影失败 (${repo_full})"; return 1; }
+  jq '.labels' "$node_file" >"$label_state" ||
+    { fail "Discussion #${number} 标签状态暂存失败 (${repo_full})"; return 1; }
+  total="$(jq -r '.labels.totalCount' "$node_file")"
+  count="$(jq '.labels.nodes | length' "$node_file")"
+  while :; do
+    requested=1
+    for label_value in "${labels[@]+"${labels[@]}"}"; do
+      if ! jq -es --arg label "$label_value" 'index($label) != null' \
+        "$names_file" >/dev/null; then
+        requested=0
+        break
+      fi
+    done
+    (( requested == 1 )) && return 0
+    (( count < total )) || return 3
+    has_next="$(jq -r '.pageInfo.hasNextPage' "$label_state")"
+    cursor="$(jq -r '.pageInfo.endCursor // empty' "$label_state")"
+    if [[ "$has_next" != "true" || -z "$cursor" ]]; then
+      fail "Discussion #${number} 标签连接提前终止 (${count}/${total}, ${repo_full})"
+      return 1
+    fi
+    first=$((total - count))
+    (( first > 100 )) && first=100
+    response="${run_dir}/labels-${owner}-${name}-${number}-${count}.json"
+    # shellcheck disable=SC2016
+    if ! gh api graphql -f owner="$owner" -f name="$name" \
+      -F number="$number" -F first="$first" -f labelCursor="$cursor" \
+      -f query='query DiscussionLabels(
+        $owner:String!,$name:String!,$number:Int!,$first:Int!,$labelCursor:String
+      ){repository(owner:$owner,name:$name){discussion(number:$number){
+        labels(first:$first,after:$labelCursor){totalCount nodes{name}
+          pageInfo{hasNextPage endCursor}}}}}' >"$response"; then
+      fail "Discussion #${number} 标签后续页请求失败 (${repo_full})"
+      return 1
+    fi
+    if ! graphql_response_ok "$response" ||
+       ! jq -e '
+         .data.repository.discussion.labels as $labels
+         | ($labels | type == "object")
+         and ($labels.totalCount | type == "number" and . >= 0 and floor == .)
+         and ($labels.nodes | type == "array" and length <= $labels.totalCount)
+         and all($labels.nodes[]; .name | type == "string")
+         and ($labels.pageInfo.hasNextPage | type == "boolean")
+         and (($labels.pageInfo.endCursor == null)
+              or ($labels.pageInfo.endCursor | type == "string"))
+       ' "$response" >/dev/null; then
+      fail "Discussion #${number} 标签后续页响应无效 (${repo_full})"
+      return 1
+    fi
+    page_count="$(jq '.data.repository.discussion.labels.nodes | length' "$response")"
+    if (( page_count == 0 )); then
+      fail "Discussion #${number} 标签后续页为空 (${repo_full})"
+      return 1
+    fi
+    if [[ "$(jq -r '.data.repository.discussion.labels.totalCount' "$response")" != "$total" ]]; then
+      fail "Discussion #${number} 标签 totalCount 发生变化 (${repo_full})"
+      return 1
+    fi
+    jq -c '.data.repository.discussion.labels.nodes[].name' "$response" \
+      >>"$names_file" ||
+      { fail "Discussion #${number} 标签后续页投影失败 (${repo_full})"; return 1; }
+    count=$((count + page_count))
+    if (( count > total )); then
+      fail "Discussion #${number} 标签数超过 totalCount (${repo_full})"
+      return 1
+    fi
+    jq '.data.repository.discussion.labels' "$response" >"$label_state" ||
+      { fail "Discussion #${number} 标签状态暂存失败 (${repo_full})"; return 1; }
+  done
+}
+process_discussion_node() {
+  local repo_full="$1"
+  local node_file="$2"
+  local out="$3"
+  local number labels_file labels_status
+  if ! jq -e '
+    type == "object"
+    and (.number | type == "number")
+    and ((.title == null) or (.title | type == "string"))
+    and (.url | type == "string")
+    and (.createdAt | type == "string")
+    and (.updatedAt | type == "string")
+    and (.closed | type == "boolean")
+    and (if .closed then (.closedAt | type == "string") else .closedAt == null end)
+    and ((.category == null) or (.category.name == null)
+         or (.category.name | type == "string"))
+    and ((.author == null) or (.author.login == null)
+         or (.author.login | type == "string"))
+    and (.labels | type == "object")
+    and (.labels.totalCount | type == "number" and . >= 0 and floor == .)
+    and (.labels.nodes | type == "array") and ((.labels.nodes | length) <= .labels.totalCount)
+    and all(.labels.nodes[]; .name | type == "string")
+    and (.labels.pageInfo.hasNextPage | type == "boolean")
+    and ((.labels.pageInfo.endCursor == null)
+         or (.labels.pageInfo.endCursor | type == "string"))
+  ' "$node_file" >/dev/null; then
+    fail "Discussion 节点响应结构无效 (${repo_full})"
+    return 1
+  fi
+  if [[ -n "$stale_cutoff" ]] &&
+     ! jq -e --arg cutoff "$stale_cutoff" '.updatedAt[0:10] < $cutoff' \
+       "$node_file" >/dev/null; then
+    return 3
+  fi
+  if (( labels_count > 0 )); then
+    number="$(jq -r '.number' "$node_file")"
+    labels_file="${run_dir}/discussion-label-names-${repo_full//\//-}-${number}.jsonl"
+    if fetch_discussion_labels "$repo_full" "$number" "$node_file" "$labels_file"; then
+      :
+    else
+      labels_status=$?
+      (( labels_status == 3 )) && return 3
+      return "$labels_status"
+    fi
+  fi
+  if ! jq -c \
+    --arg scope "$(scope_label)" \
+    --arg repo_full "$repo_full" '
+    ($repo_full | split("/")) as $parts
+    | {
+        scope: $scope,
+        kind: "discussion",
+        owner: $parts[0],
+        repo: ($parts[1:] | join("/")),
+        repo_full_name: $repo_full,
+        number: .number,
+        title: (.title // ""),
+        url: .url,
+        state: (if .closed then "closed" else "open" end),
+        updated_at: .updatedAt,
+        created_at: .createdAt,
+        closed_at: (if .closed then .closedAt else null end),
+        category: (.category.name // null),
+        author: (.author.login // null)
+      }
+  ' "$node_file" >>"$out"; then
+    fail "Discussion 节点投影失败 (${repo_full})"
+    return 1
+  fi
+}
+fetch_discussion_page() {
+  local repo_full="$1"
+  local first="$2"
+  local cursor="$3"
+  local out="$4"
+  local owner="${repo_full%%/*}"
+  local name="${repo_full#*/}"
+  # shellcheck disable=SC2016
+  if ! gh api graphql -f owner="$owner" -f name="$name" -F first="$first" \
+    -f discussionCursor="$cursor" -f query='query RepositoryDiscussions(
+      $owner:String!,$name:String!,$first:Int!,$discussionCursor:String
+    ){repository(owner:$owner,name:$name){nameWithOwner discussions(
+      first:$first,after:$discussionCursor,
+      orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{
+        number title url createdAt updatedAt closed closedAt category{name}
+        author{login} labels(first:100){totalCount nodes{name}
+          pageInfo{hasNextPage endCursor}}}
+      pageInfo{hasNextPage endCursor}}}}' >"$out"; then
+    fail "Discussion 后续页请求失败 (${repo_full})"
+    return 1
+  fi
+  graphql_response_ok "$out" ||
+    { fail "Discussion 后续页返回 GraphQL errors (${repo_full})"; return 1; }
+  jq -e '.data.repository != null and
+         (.data.repository.discussions | type == "object")' "$out" >/dev/null ||
+    { fail "Discussion 后续页 repository 为空或结构无效 (${repo_full})"; return 1; }
+}
+process_discussion_connection() {
+  local repo_full="$1"
+  local connection_file="$2"
+  local out="$3"
+  local matched=0 seen=0 total=-1 page=0
+  local node_count node_line node_file node_status has_next cursor first response
+  local repo_out="${run_dir}/repo-${repo_full//\//-}.jsonl"
+  local nodes_file="${run_dir}/nodes-${repo_full//\//-}.jsonl"
+  : >"$repo_out"
+  while :; do
+    if ! jq -e '
+      type == "object"
+      and (.totalCount | type == "number" and . >= 0 and floor == .)
+      and (.nodes | type == "array")
+      and (.pageInfo.hasNextPage | type == "boolean")
+      and ((.pageInfo.endCursor == null) or
+           (.pageInfo.endCursor | type == "string"))
+    ' "$connection_file" >/dev/null; then
+      fail "Discussion connection 响应结构无效 (${repo_full})"
+      return 1
+    fi
+    if (( total < 0 )); then
+      total="$(jq -r '.totalCount' "$connection_file")"
+    elif [[ "$(jq -r '.totalCount' "$connection_file")" != "$total" ]]; then
+      fail "Discussion 分页期间 totalCount 发生变化 (${repo_full})"
+      return 1
+    fi
+    : >"$nodes_file"
+    jq -c '.nodes[]' "$connection_file" >"$nodes_file" ||
+      { fail "Discussion 节点暂存失败 (${repo_full})"; return 1; }
+    node_count="$(jq '.nodes | length' "$connection_file")"
+    while IFS= read -r node_line || [[ -n "$node_line" ]]; do
+      node_file="${run_dir}/node-${repo_full//\//-}-${seen}.json"
+      printf '%s\n' "$node_line" >"$node_file"
+      if process_discussion_node "$repo_full" "$node_file" "$repo_out"; then
+        matched=$((matched + 1))
+      else
+        node_status=$?
+        (( node_status == 3 )) || return "$node_status"
+      fi
+      seen=$((seen + 1))
+      (( matched >= discussion_limit )) && break
+    done <"$nodes_file"
+    (( matched >= discussion_limit )) && break
+    if (( seen > total )); then
+      fail "Discussion 节点数超过 totalCount (${repo_full})"
+      return 1
+    fi
+    (( seen == total )) && break
+    has_next="$(jq -r '.pageInfo.hasNextPage' "$connection_file")"
+    cursor="$(jq -r '.pageInfo.endCursor // empty' "$connection_file")"
+    if [[ "$has_next" != "true" || -z "$cursor" || "$node_count" == "0" ]]; then
+      fail "Discussion connection 提前终止 (${seen}/${total}, ${repo_full})"
+      return 1
+    fi
+    first=$((total - seen))
+    (( first > 100 )) && first=100
+    if [[ -z "$stale_cutoff" && labels_count -eq 0 ]]; then
+      first=$((discussion_limit - matched))
+      (( first > 100 )) && first=100
+    fi
+    (( first >= 1 )) || first=1
+    page=$((page + 1))
+    response="${run_dir}/discussion-${repo_full//\//-}-${page}.json"
+    fetch_discussion_page "$repo_full" "$first" "$cursor" "$response" ||
+      return 1
+    jq '.data.repository.discussions' "$response" >"$connection_file" ||
+      { fail "Discussion 后续页暂存失败 (${repo_full})"; return 1; }
+  done
+  cat "$repo_out" >>"$out" ||
+    { fail "无法暂存 Discussion 结果 (${repo_full})"; return 1; }
+}
+collect_explicit_repo_discussions() {
+  local repo_full owner name first
+  local response="${run_dir}/explicit-repo.json"
+  local connection="${run_dir}/explicit-connection.json"
+  repo_full="$(repo_full_name)"
+  owner="${repo_full%%/*}"
+  name="${repo_full#*/}"
+  first="$(discussion_first_size)"
+  # shellcheck disable=SC2016
+  if ! gh api graphql -f owner="$owner" -f name="$name" -F first="$first" \
+    -f query='query RepositoryDiscussions(
+      $owner:String!,$name:String!,$first:Int!
+    ){repository(owner:$owner,name:$name){nameWithOwner hasDiscussionsEnabled
+      discussions(first:$first,orderBy:{field:UPDATED_AT,direction:DESC}){
+        totalCount nodes{number title url createdAt updatedAt closed closedAt
+          category{name} author{login} labels(first:100){totalCount nodes{name}
+            pageInfo{hasNextPage endCursor}}}
+        pageInfo{hasNextPage endCursor}}}}' >"$response"; then
+    fail "Discussion repository 请求失败 (${repo_full})"
+    return 1
+  fi
+  if ! graphql_response_ok "$response"; then
+    fail "Discussion repository 返回 GraphQL errors (${repo_full})"
+    return 1
+  fi
+  if ! jq -e --arg repo "$repo_full" '
+    .data.repository != null
+    and .data.repository.nameWithOwner == $repo
+    and (.data.repository.hasDiscussionsEnabled | type == "boolean")
+  ' "$response" >/dev/null; then
+    fail "Discussion repository 为空或响应无效 (${repo_full})"
+    return 1
+  fi
+  if [[ "$(jq -r '.data.repository.hasDiscussionsEnabled' "$response")" != "true" ]]; then
+    return 0
+  fi
+  jq '.data.repository.discussions' "$response" >"$connection" ||
+    { fail "Discussion repository 首屏暂存失败 (${repo_full})"; return 1; }
+  process_discussion_connection "$repo_full" "$connection" "$items_file"
+}
+collect_owned_repo_discussions() {
+  local first repo_cursor="" page=0 seen_repos=0 total_repos=-1 response
+  local repos_file="${run_dir}/outer-repos.jsonl"
+  local repo_line repo_file repo_full connection has_next args
+  first="$(discussion_first_size)"
+  while :; do
+    response="${run_dir}/outer-${page}.json"
+    args=(api graphql -f account="$account" -F repoFirst=100
+      -F discussionFirst="$first")
+    [[ -n "$repo_cursor" ]] && args+=(-f repoCursor="$repo_cursor")
+    # shellcheck disable=SC2016
+    args+=(-f query='query OuterRepositories(
+      $account:String!,$repoFirst:Int!,$repoCursor:String,$discussionFirst:Int!
+    ){user(login:$account){repositories(first:$repoFirst,after:$repoCursor,
+      ownerAffiliations:[OWNER],isFork:false){totalCount nodes{nameWithOwner
+        isFork hasDiscussionsEnabled discussions(first:$discussionFirst,
+          orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{
+            number title url createdAt updatedAt closed closedAt category{name}
+            author{login} labels(first:100){totalCount nodes{name}
+              pageInfo{hasNextPage endCursor}}}
+          pageInfo{hasNextPage endCursor}}}
+        pageInfo{hasNextPage endCursor}}}}')
+    if ! gh "${args[@]}" >"$response"; then
+      fail "Discussion 仓库枚举第 $((page + 1)) 页请求失败"
+      return 1
+    fi
+    if ! graphql_response_ok "$response"; then
+      fail "Discussion 仓库枚举返回 GraphQL errors"
+      return 1
+    fi
+    if ! jq -e '
+      .data.user != null
+      and (.data.user.repositories | type == "object")
+      and (.data.user.repositories.totalCount |
+           type == "number" and . >= 0 and floor == .)
+      and (.data.user.repositories.nodes | type == "array")
+      and all(.data.user.repositories.nodes[];
+        (.nameWithOwner | type == "string")
+        and (.isFork | type == "boolean")
+        and (.hasDiscussionsEnabled | type == "boolean"))
+      and (.data.user.repositories.pageInfo.hasNextPage | type == "boolean")
+      and ((.data.user.repositories.pageInfo.endCursor == null)
+           or (.data.user.repositories.pageInfo.endCursor | type == "string"))
+    ' "$response" >/dev/null; then
+      fail "Discussion 仓库枚举响应结构无效或 user 为空"
+      return 1
+    fi
+    if (( total_repos < 0 )); then
+      total_repos="$(jq -r '.data.user.repositories.totalCount' "$response")"
+    elif [[ "$(jq -r '.data.user.repositories.totalCount' "$response")" != "$total_repos" ]]; then
+      fail "Discussion 仓库枚举期间 totalCount 发生变化"
+      return 1
+    fi
+    jq -c '.data.user.repositories.nodes[]' "$response" >"$repos_file" ||
+      { fail "Discussion 仓库首屏暂存失败"; return 1; }
+    while IFS= read -r repo_line || [[ -n "$repo_line" ]]; do
+      repo_file="${run_dir}/outer-repo-${seen_repos}.json"
+      printf '%s\n' "$repo_line" >"$repo_file"
+      seen_repos=$((seen_repos + 1))
+      if [[ "$(jq -r '.isFork' "$repo_file")" == "true" ||
+            "$(jq -r '.hasDiscussionsEnabled' "$repo_file")" != "true" ]]; then
+        continue
+      fi
+      repo_full="$(jq -r '.nameWithOwner' "$repo_file")"
+      if ! [[ "$repo_full" =~ ^[^/]+/[^/]+$ ]]; then
+        fail "Discussion 仓库 nameWithOwner 无效"
+        return 1
+      fi
+      connection="${run_dir}/outer-connection-${seen_repos}.json"
+      jq '.discussions' "$repo_file" >"$connection" ||
+        { fail "Discussion 仓库首屏 connection 暂存失败 (${repo_full})"; return 1; }
+      process_discussion_connection "$repo_full" "$connection" "$items_file" ||
+        return 1
+    done <"$repos_file"
+    if (( seen_repos > total_repos )); then
+      fail "Discussion 仓库数超过 totalCount"
+      return 1
+    fi
+    (( seen_repos == total_repos )) && break
+    has_next="$(jq -r '.data.user.repositories.pageInfo.hasNextPage' "$response")"
+    repo_cursor="$(jq -r '.data.user.repositories.pageInfo.endCursor // empty' "$response")"
+    if [[ "$has_next" != "true" || -z "$repo_cursor" ]]; then
+      fail "Discussion 仓库枚举提前终止 (${seen_repos}/${total_repos})"
+      return 1
+    fi
+    page=$((page + 1))
+  done
+}
+collect_discussions() {
+  if [[ -n "$repo" ]]; then
+    collect_explicit_repo_discussions
+  else
+    collect_owned_repo_discussions
+  fi
+}
+repeat_char() {
+  jq -nr --arg value "$1" --argjson count "$2" '$value * $count'
+}
+render_json() {
+  local out="$1"
+  jq -s '.' "$items_file" >"$out" || { fail "JSON renderer 失败"; return 1; }
+}
+render_plain() {
+  local out="$1"
+  if [[ ! -s "$items_file" ]]; then
+    printf '账号: %s\n\n0 items\n' "$account" >"$out"
+    return 0
+  fi
+  {
+    printf '账号: %s\n' "$account"
+    jq -sr '
+      def clean: tostring | gsub("[\r\n\t]"; " ");
+      group_by(.kind)
+      | .[]
+      | "\n【" + .[0].scope + " · " +
+          (if .[0].kind == "issue" then "open Issue"
+           elif .[0].kind == "pr" then "open PR"
+           elif .[0].kind == "discussion" then "Discussions"
+           else "moved-to-Discussion closed Issue" end) +
+          "】 " + (length | tostring) + " 条",
+        (group_by(.repo_full_name)[]
+          | "  " + .[0].repo_full_name + " (" + (length | tostring) + ")",
+            (.[] | "    - #" + (.number | tostring) + " " +
+              ((.title // "") | clean)))
+    ' "$items_file"
+  } >"$out" || { fail "plain renderer 失败"; return 1; }
+}
+render_table() {
+  local out="$1"
+  local columns=120 type_width=10 updated_width=10
+  local repo_width number_width state_width title_width top middle bottom
+  local header_type header_repo header_number header_state header_updated
+  local header_title
+  local use_color=0
+  if [[ -t 1 ]]; then
+    if command -v tput >/dev/null 2>&1; then
+      columns="$(tput cols 2>/dev/null || printf '120')"
+    fi
+    [[ "$columns" =~ ^[0-9]+$ ]] || columns=120
+    [[ -z "${NO_COLOR+x}" ]] && use_color=1
+  fi
+  repo_width="$(jq -sr '
+    [("Repository" | length),
+     (.[] | (.repo_full_name | tostring | gsub("[\r\n\t]"; " ") | length))]
+    | max
+  ' "$items_file")" || { fail "表格仓库宽度计算失败"; return 1; }
+  number_width="$(jq -sr '
+    [(1), (.[] | (.number | tostring | length))] | max
+  ' "$items_file")" || { fail "表格编号宽度计算失败"; return 1; }
+  state_width="$(jq -sr '
+    [("State" | length),
+     (.[] | (.state | tostring | gsub("[\r\n\t]"; " ") | length))]
+    | max
+  ' "$items_file")" || { fail "表格状态宽度计算失败"; return 1; }
+  title_width=$((columns - type_width - repo_width - number_width -
+                 state_width - updated_width - 19))
+  (( title_width >= 20 )) || title_width=20
+  top="┌$(repeat_char "─" "$((type_width + 2))")┬$(repeat_char "─" "$((repo_width + 2))")┬$(repeat_char "─" "$((number_width + 2))")┬$(repeat_char "─" "$((state_width + 2))")┬$(repeat_char "─" "$((updated_width + 2))")┬$(repeat_char "─" "$((title_width + 2))")┐"
+  middle="├$(repeat_char "─" "$((type_width + 2))")┼$(repeat_char "─" "$((repo_width + 2))")┼$(repeat_char "─" "$((number_width + 2))")┼$(repeat_char "─" "$((state_width + 2))")┼$(repeat_char "─" "$((updated_width + 2))")┼$(repeat_char "─" "$((title_width + 2))")┤"
+  bottom="└$(repeat_char "─" "$((type_width + 2))")┴$(repeat_char "─" "$((repo_width + 2))")┴$(repeat_char "─" "$((number_width + 2))")┴$(repeat_char "─" "$((state_width + 2))")┴$(repeat_char "─" "$((updated_width + 2))")┴$(repeat_char "─" "$((title_width + 2))")┘"
+  printf -v header_type "%-*s" "$type_width" "Type"
+  printf -v header_repo "%-*s" "$repo_width" "Repository"
+  printf -v header_number "%*s" "$number_width" "#"
+  printf -v header_state "%-*s" "$state_width" "State"
+  printf -v header_updated "%-*s" "$updated_width" "Updated"
+  printf -v header_title "%-*s" "$title_width" "Title"
+  {
+    printf '%s\n' "$top"
+    if (( use_color == 1 )); then
+      printf '│ \033[1;36m%s\033[0m │ \033[1;36m%s\033[0m │ \033[1;36m%s\033[0m │ \033[1;36m%s\033[0m │ \033[1;36m%s\033[0m │ \033[1;36m%s\033[0m │\n' \
+        "$header_type" "$header_repo" "$header_number" "$header_state" \
+        "$header_updated" "$header_title"
+    else
+      printf '│ %s │ %s │ %s │ %s │ %s │ %s │\n' \
+        "$header_type" "$header_repo" "$header_number" "$header_state" \
+        "$header_updated" "$header_title"
+    fi
+    printf '%s\n' "$middle"
+    jq -sr \
+      --argjson tw "$type_width" \
+      --argjson rw "$repo_width" \
+      --argjson nw "$number_width" \
+      --argjson sw "$state_width" \
+      --argjson uw "$updated_width" \
+      --argjson titlew "$title_width" '
+      def clean: tostring | gsub("[\r\n\t]"; " ");
+      def trunc($width):
+        if length > $width
+        then .[0:($width - 1)] + "…"
+        else .
+        end;
+      def padr($width):
+        trunc($width) as $value
+        | $value + (" " * ($width - ($value | length)));
+      def padl($width):
+        trunc($width) as $value
+        | (" " * ($width - ($value | length))) + $value;
+      .[]
+      | (if .kind == "issue" then "Issue"
+         elif .kind == "pr" then "PR"
+         elif .kind == "discussion" then "Discussion"
+         else "Moved" end) as $type
+      | "│ " + ($type | padr($tw)) +
+        " │ " + ((.repo_full_name | clean) | padr($rw)) +
+        " │ " + ((.number | tostring) | padl($nw)) +
+        " │ " + ((.state | clean) | padr($sw)) +
+        " │ " + (((.updated_at // "") | clean | .[0:10]) | padr($uw)) +
+        " │ " + (((.title // "") | clean) | padr($titlew)) + " │"
+    ' "$items_file"
+    printf '%s\n' "$bottom"
+    if [[ -s "$items_file" ]]; then
+      jq -sr '
+        group_by(.kind)
+        | map((if .[0].kind == "issue" then "Issue"
+               elif .[0].kind == "pr" then "PR"
+               elif .[0].kind == "discussion" then "Discussion"
+               else "Moved" end) + " " + (length | tostring))
+        | "Total: " + ([.[] | capture(" (?<n>[0-9]+)$").n | tonumber] |
+                       add | tostring) + " (" + join(", ") + ")"
+      ' "$items_file"
+    else
+      printf 'Total: 0\n'
+    fi
+  } >"$out" || { fail "table renderer 失败"; return 1; }
+}
+(( want_issues == 0 )) ||
+  collect_search_pages "$(build_query issue)" issue "$items_file" || exit 1
+(( want_prs == 0 )) ||
+  collect_search_pages "$(build_query pr)" pr "$items_file" || exit 1
+(( want_discussions == 0 )) || collect_discussions || exit 1
+if (( want_moved_to_discussion == 1 )); then
+  collect_search_pages "$(build_moved_query)" moved_to_discussion "$items_file" ||
+    exit 1
 fi
+output_file="${run_dir}/stdout"
+if (( json_mode == 1 )); then
+  render_json "$output_file" || exit 1
+elif (( plain_mode == 1 )); then
+  render_plain "$output_file" || exit 1
+else
+  render_table "$output_file" || exit 1
+fi
+cat "$output_file"

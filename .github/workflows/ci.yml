@@ -16,10 +16,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Syntax check
-        run: bash -n gh-mine install.sh
+        run: /bin/bash -n gh-mine install.sh tests/run.sh
 
-      - name: ShellCheck (advisory)
+      - name: ShellCheck
         run: |
-          # Advisory only: report findings but do not fail the build.
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck gh-mine install.sh || true
+          shellcheck gh-mine install.sh tests/run.sh
+
+  behavior:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: /bin/bash -n gh-mine install.sh tests/run.sh
+
+      - name: Behavior tests
+        run: /bin/bash tests/run.sh

@@ -140,7 +140,7 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 - `queue_mode: full_queue_drain`，当前只有 GH-1。
 - `pr_tier: standard` 候选：无 schema、迁移、auth 或安全边界变化；CI 与 installer
   会被独立审查。若 reviewer 判定 enforcement-sensitive，则 fail-closed 提升 heavy。
-- 实现基线为本地 `cfd1b6c`，其中包含尚未推送到 `origin/main` 的 Discussion
+- 实现基线为本地 `6c07e76`，其中包含尚未推送到 `origin/main` 的 Discussion
   hygiene 功能；最终 PR 相对 `origin/main` 将同时包含该基线提交和 GH-1 实现，
   PR 描述必须明确这一点。
 - 不修改主工作树 `/Users/apple/Desktop/code/AI/tool/gh-mine`；实现 worktree 为

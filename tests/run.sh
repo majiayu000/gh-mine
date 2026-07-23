@@ -310,6 +310,18 @@ test_json_contract() {
     "legacy repo retained"
   assert_eq '["alpha","beta"]' "$(jq -c '[.[].owner]' "${CASE_DIR}/stdout")" \
     "owner added"
+
+  begin_case moved_closed_at
+  make_rest "${CASE_DIR}/fixtures/rest-moved-1.json" 1 false 1 acme repo 9
+  jq '.items[0].state = "closed" |
+      .items[0].closed_at = "2024-02-03T04:05:06Z"' \
+    "${CASE_DIR}/fixtures/rest-moved-1.json" >"${CASE_DIR}/moved.next"
+  mv "${CASE_DIR}/moved.next" "${CASE_DIR}/fixtures/rest-moved-1.json"
+  status="$(run_cli --account me --moved-to-discussion --json)"
+  assert_eq 0 "$status" "moved JSON status"
+  assert_eq '"2024-02-03T04:05:06Z"' \
+    "$(jq -c '.[0].closed_at' "${CASE_DIR}/stdout")" \
+    "moved JSON preserves non-null closed_at"
   pass json_contract
 }
 

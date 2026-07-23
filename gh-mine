@@ -224,7 +224,7 @@ collect_search_pages() {
       return 1
     fi
     if ! jq -c --arg scope "$(scope_label)" --arg kind "$kind" '
-      .items[]
+      .items[] | . as $source
       | (.repository_url | split("/") | .[-2:]) as $repo_parts
       | {
           scope:$scope, kind:$kind, owner:$repo_parts[0], repo:$repo_parts[1],
@@ -233,7 +233,7 @@ collect_search_pages() {
           updated_at:.updated_at
         }
       | if $kind == "moved_to_discussion"
-        then . + {closed_at: (.closed_at // null)}
+        then . + {closed_at: ($source.closed_at // null)}
         else .
         end
     ' "$response_file" >>"$projected_file"; then

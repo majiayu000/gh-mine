@@ -30,6 +30,16 @@ One-liner (drops `gh-mine` into `~/.local/bin`; override with `GH_MINE_INSTALL_D
 curl -fsSL https://raw.githubusercontent.com/majiayu000/gh-mine/main/install.sh | bash
 ```
 
+The installer stages the download in the target directory, validates Bash
+syntax, and atomically replaces an existing install only after validation. Set
+`GH_MINE_VERSION` to install another tag, branch, or commit. For an exact
+integrity check, also set `GH_MINE_SHA256` to the expected 64-digit SHA256:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/majiayu000/gh-mine/main/install.sh |
+  env GH_MINE_VERSION=v1.2.3 GH_MINE_SHA256=YOUR_64_HEX_SHA256 bash
+```
+
 Manual:
 
 ```bash
@@ -56,6 +66,7 @@ gh-mine --repo <name>    # limit to one repo (owner optional)
 gh-mine --stale <days>   # only items not updated in <days> days
 gh-mine --label <name>   # filter by label (repeatable, AND)
 gh-mine --account <user> # query another account (does not switch `gh` login)
+gh-mine --plain          # legacy grouped text output
 gh-mine --json           # emit a JSON array (for jq / piping)
 gh-mine -h | --help
 ```
@@ -68,28 +79,24 @@ gh-mine -h | --help
 | `--authored` | `author:<login>` | everything you created, across all repos |
 | `--assigned` | `assignee:<login>` | everything assigned to you, across all repos |
 
-Output is grouped by repository with a per-scope count. The login defaults to the
-currently active `gh` account (`gh api user`).
+The default output is one Unicode table with fixed columns:
+`Type | Repository | # | State | Updated | Title`. Repository values use full
+`owner/name` identity, so repositories with the same short name remain distinct.
+The `#` column is right-aligned, unsafe control whitespace is normalized, and
+long titles are truncated at Unicode code-point boundaries. TTY headers use
+restrained cyan/bold styling; pipes, `NO_COLOR`, and JSON never contain ANSI.
+Use `--plain` for the legacy grouped view. `--plain --json` is invalid.
 
 ### Example output
 
 ```text
 $ gh-mine
-账号: majiayu000
-
-【自己的仓库 · open Issue】 23 条
-  litellm-rs (5)
-    - #715 Split provider failure facts from retry policy and HTTP mapping
-    - #714 Provider registry needs a single declaration source and conformance tests
-  remem (5)
-    - #658 Track remaining blocked and umbrella work after #643 closure
-  ...
-
-【自己的仓库 · open PR】 15 条
-  rclean (3)
-    - #183 feat: report AI model stores conservatively
-    - #177 feat: add IDE cache and log rules
-  ...
+┌────────────┬──────────────────────┬──────┬────────┬────────────┬──────────────────────┐
+│ Type       │ Repository           │    # │ State  │ Updated    │ Title                │
+├────────────┼──────────────────────┼──────┼────────┼────────────┼──────────────────────┤
+│ Issue      │ majiayu000/gh-mine   │    1 │ open   │ 2026-07-24 │ Improve reliability  │
+└────────────┴──────────────────────┴──────┴────────┴────────────┴──────────────────────┘
+Total: 1 (Issue 1)
 
 $ gh-mine --stale 30 --issues   # only issues not updated in 30+ days
 $ gh-mine --label bug           # only items labelled "bug"
@@ -103,12 +110,13 @@ AND.
 
 ### Discussion hygiene
 
-`--discussions` uses GitHub GraphQL to list the most recently updated
-Discussions in owned repositories that have Discussions enabled. `--repo` limits
-the scan to a single repository, and `--discussion-limit` controls how many
-Discussions are fetched per repository. Discussion enumeration is repository
-scoped, so `--authored` and `--assigned` are not supported with
-`--discussions` or `--hygiene`.
+`--discussions` uses cursor-paginated GitHub GraphQL to scan Discussions in every
+owned, non-fork repository that has Discussions enabled. `--repo` limits the
+scan to a single repository, and `--discussion-limit` controls how many matching
+Discussions are returned per repository. Stale and label filters continue
+scanning until the limit is met or the connection is exhausted. Discussion
+enumeration is repository scoped, so `--authored` and `--assigned` are rejected
+with `--discussions` or `--hygiene`, even when `--repo` is present.
 
 `--moved-to-discussion` reports closed issues whose body or comments contain
 `discussions/`. This is a lightweight way to find roadmap or umbrella issues
@@ -125,20 +133,22 @@ gh-mine --json --repo litellm-rs --issues | jq '[.[].number]'
 gh-mine --json --hygiene | jq '.[] | select(.kind=="moved_to_discussion")'
 ```
 
-Each element carries `scope`, `kind` (`issue`/`pr`), `repo`, `number`, `title`,
-`url`, `state`, `updated_at`. Discussion items add `created_at`, `category`, and
-`author`; moved-to-discussion issue items add `closed_at`. Empty results emit
-`[]`.
+Each element carries `scope`, `kind`, legacy short `repo`, stable `owner` and
+`repo_full_name`, `number`, `title`, `url`, `state`, and `updated_at`.
+Discussion items add `created_at`, nullable `closed_at`, `category`, and
+`author`; moved-to-discussion issue items add nullable `closed_at`. Empty
+results emit `[]`.
 
 ## Notes
 
 - The GitHub Search endpoint only accepts `GET`, so the query is URL-encoded into
   the request path rather than passed as `gh api ... -f q=` (which triggers a
   non-GET request and returns 404).
-- Search results are capped at 100 per request; if a scope exceeds that, the tool
-  prints a warning and lists the first 100.
-- Discussion listing uses GitHub GraphQL because Discussions are not returned by
-  the Issues search endpoint.
+- Search requests consume every accessible 100-item page. Incomplete Search
+  responses, premature pagination, and totals above GitHub's accessible
+  1,000-result Search limit fail explicitly instead of returning partial data.
+- Discussion listing uses batched repository first screens and selective cursor
+  follow-up because Discussions are not returned by the Issues search endpoint.
 
 ## Contributing
 

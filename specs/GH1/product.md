@@ -31,16 +31,17 @@ REST/GraphQL 分页、Discussion 状态、仓库身份和失败传播存在静�
 
 ## Behavior Invariants
 
-1. **B-001** 默认人类输出必须用一个 Unicode 边框表格展示所有匹配项，每个
-   item 恰好一行，列顺序固定为 `Type`、`Repository`、`#`、`State`、
-   `Updated`、`Title`；同一次运行的不同 kind 不再拆成互相分离的缩进列表。
-   表格行默认按 `repo_full_name` 不区分 ASCII 大小写排序，再以原始仓库名、
-   kind 和编号提供稳定次序。
-2. **B-002** `Repository` 必须以完整 `owner/name` 作为身份，跨 owner 的同名
-   仓库不得被合并；表格单元格可以用省略号截断显示，完整值继续由 `--plain` 和
-   `--json` 提供。`#` 必须右对齐；Repository 与 Title 必须按终端显示单元宽度
-   处理中文、Emoji 和组合字符。TTY 宽度满足最小六列布局时，每条边框和数据行
-   都不得超过 `tput cols`；宽度不足时必须明确失败并提示使用 `--plain`。
+1. **B-001** 默认人类输出必须用一个 Unicode 边框表格展示所有匹配项，列顺序
+   固定为 `Type`、`Repository`、`#`、`Updated`；State 与 Title 不进入默认
+   表格。同一次运行的不同 kind 不再拆成互相分离的缩进列表。表格行默认按短
+   仓库名不区分 ASCII 大小写排序，再以原始短名称、`repo_full_name`、kind 和
+   编号提供稳定次序。
+2. **B-002** `repo_full_name` 必须继续以完整 `owner/name` 唯一标识仓库，跨
+   owner 的同名仓库不得被合并。默认 Repository 单元格显示完整短仓库名；只有
+   跨 owner 同名时显示完整 `owner/name` 消歧。Repository 不得使用省略号，名称
+   超过单行宽度时必须在后续物理行完整续显。`#` 必须右对齐；TTY 宽度满足最小
+   四列布局时，每条边框和数据行都不得超过 `tput cols`；宽度不足时必须明确
+   失败并提示使用 `--plain`。完整字段继续由 `--plain` 和 `--json` 提供。
 3. **B-003** 仅当 stdout 是 TTY 且未设置 `NO_COLOR` 时，表头才使用克制的
    ANSI 粗体/青色；非 TTY、设置 `NO_COLOR` 或 `--json` 时不得输出 ANSI。
 4. **B-004** `--plain` 必须保留旧版分组文本；`--plain` 与 `--json` 同时出现

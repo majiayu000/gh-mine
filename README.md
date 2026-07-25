@@ -79,26 +79,27 @@ gh-mine -h | --help
 | `--authored` | `author:<login>` | everything you created, across all repos |
 | `--assigned` | `assignee:<login>` | everything assigned to you, across all repos |
 
-The default output is one Unicode table with fixed columns:
-`Type | Repository | # | State | Updated | Title`. Rows are sorted by full
-repository name. Repository identity still uses `owner/name`, while narrow
-table cells may show an ellipsis; `--plain` and `--json` retain the complete
-value. The `#` column is right-aligned, unsafe control whitespace is normalized,
-and Repository/Title truncation accounts for Chinese, Emoji, and combining
-characters so every row fits the terminal width. TTY headers use restrained
-cyan/bold styling; pipes, `NO_COLOR`, and JSON never contain ANSI. Terminals
-too narrow for the minimum six-column layout receive an explicit `--plain` hint.
-Use `--plain` for the legacy grouped view. `--plain --json` is invalid.
+The default output is one Unicode table with four columns:
+`Type | Repository | # | Updated`. Rows are sorted by the short repository
+name. Repository cells show that short name in full; if repositories from
+different owners share a name, the table uses `owner/name` to disambiguate
+them. A repository name is never replaced by an ellipsis: unusually long names
+continue on additional table rows. `--plain` and `--json` retain the complete
+`owner/name`, state, and title values. The `#` column is right-aligned and every
+table row fits the terminal width. TTY headers use restrained cyan/bold styling;
+pipes, `NO_COLOR`, and JSON never contain ANSI. Terminals too narrow for the
+minimum four-column layout receive an explicit `--plain` hint. Use `--plain`
+for the legacy grouped view. `--plain --json` is invalid.
 
 ### Example output
 
 ```text
 $ gh-mine
-┌────────────┬──────────────────────┬──────┬────────┬────────────┬──────────────────────┐
-│ Type       │ Repository           │    # │ State  │ Updated    │ Title                │
-├────────────┼──────────────────────┼──────┼────────┼────────────┼──────────────────────┤
-│ Issue      │ majiayu000/gh-mine   │    1 │ open   │ 2026-07-24 │ Improve reliability  │
-└────────────┴──────────────────────┴──────┴────────┴────────────┴──────────────────────┘
+┌────────────┬─────────────────────────────────────────────┬──────┬────────────┐
+│ Type       │ Repository                                  │    # │ Updated    │
+├────────────┼─────────────────────────────────────────────┼──────┼────────────┤
+│ Issue      │ gh-mine                                     │    1 │ 2026-07-24 │
+└────────────┴─────────────────────────────────────────────┴──────┴────────────┘
 Total: 1 (Issue 1)
 
 $ gh-mine --stale 30 --issues   # only issues not updated in 30+ days

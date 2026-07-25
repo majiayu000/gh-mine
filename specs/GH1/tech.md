@@ -89,8 +89,10 @@ owned、non-fork 且启用 Discussions 的仓库，并在同一 outer query 中�
 不新增 `column`/Python/Rust 依赖，使用 Bash `printf` 和 `jq`：
 
 - 先把 title 中 `\r`/`\n`/`\t` 规范化为空格。
-- 终端宽度：TTY 时优先 `tput cols`，失败或非 TTY 时使用 120；固定列先按数据
-  上限分配，Title 获得剩余宽度且不低于 20。
+- 终端宽度：TTY 时优先 `tput cols`，失败或非 TTY 时使用 120；先根据固定列、
+  完整仓库名和至少 20 字符的 Title 计算最小可读宽度，有效表格宽度取终端宽度
+  与该最小值的较大者。正常宽度下 Title 获得剩余空间；极窄终端允许横向超出，
+  以避免截断仓库身份或把 Title 压到 20 字符以下。
 - jq 负责按 Unicode code point 截断，避免拆分 UTF-8 byte；Bash 只对已截断
   文本做 padding。East Asian 宽字符的视觉宽度差异作为已知限制，测试保证不会
   产生非法 UTF-8 或破坏行数。

@@ -138,8 +138,10 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 
 - `auth_mode: review`；该 packet 未自称 approved。实现前必须由用户在当前会话确认。
 - `queue_mode: full_queue_drain`，当前只有 GH-1。
-- `pr_tier: standard` 候选：无 schema、迁移、auth 或安全边界变化；CI 与 installer
-  会被独立审查。若 reviewer 判定 enforcement-sensitive，则 fail-closed 提升 heavy。
+- `pr_tier: heavy`：独立 reviewer 认定该变更同时涉及 API 完整性、installer
+  替换/校验和 CI enforcement，必须保留人工合并授权。
+- 2026-07-26 用户确认 B-002 的窄终端决策：保留完整仓库名和至少 20 字符标题；
+  当物理终端更窄时允许表格使用最小可读宽度并横向超出。
 - 实现基线为本地 `6c07e76`，其中包含尚未推送到 `origin/main` 的 Discussion
   hygiene 功能；最终 PR 相对 `origin/main` 将同时包含该基线提交和 GH-1 实现，
   PR 描述必须明确这一点。

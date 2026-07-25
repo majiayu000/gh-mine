@@ -683,44 +683,26 @@ render_plain() {
   } >"$out" || { fail "plain renderer 失败"; return 1; }
 }
 render_table() {
-  local out="$1"
-  local columns=120 type_width=10 updated_width=10
-  local repo_width number_width state_width title_width minimum_columns top middle bottom
-  local header_type header_repo header_number header_state header_updated
-  local header_title
-  local use_color=0
+  local out="$1" columns=120 type_width=10 updated_width=10
+  local repo_width number_width state_width title_width minimum_columns flexible max_repo title_reserve top middle bottom header_type header_repo header_number header_state header_updated header_title use_color=0
   if [[ -t 1 ]]; then
-    if command -v tput >/dev/null 2>&1; then
-      columns="$(tput cols 2>/dev/null || printf '120')"
-    fi
-    [[ "$columns" =~ ^[0-9]+$ ]] || columns=120
+    command -v tput >/dev/null 2>&1 && columns="$(tput cols 2>/dev/null || printf '120')"
+    [[ "$columns" =~ ^[1-9][0-9]*$ ]] || columns=120
     [[ -z "${NO_COLOR+x}" ]] && use_color=1
   fi
-  repo_width="$(jq -sr '
-    [("Repository" | length),
-     (.[] | (.repo_full_name | tostring | gsub("[\r\n\t]"; " ") | length))]
-    | max
-  ' "$items_file")" || { fail "表格仓库宽度计算失败"; return 1; }
-  number_width="$(jq -sr '
-    [(1), (.[] | (.number | tostring | length))] | max
-  ' "$items_file")" || { fail "表格编号宽度计算失败"; return 1; }
-  state_width="$(jq -sr '
-    [("State" | length),
-     (.[] | (.state | tostring | gsub("[\r\n\t]"; " ") | length))]
-    | max
-  ' "$items_file")" || { fail "表格状态宽度计算失败"; return 1; }
-  minimum_columns=$((type_width + repo_width + number_width + state_width + updated_width + 20 + 19)); (( columns >= minimum_columns )) || columns=$minimum_columns
-  title_width=$((columns - type_width - repo_width - number_width -
-                 state_width - updated_width - 19))
+  repo_width="$(jq -sr '["Repository",(.[]|.repo_full_name|tostring|gsub("[\r\n\t]";" "))]|map(length)|max' "$items_file")" || { fail "表格仓库宽度计算失败"; return 1; }
+  number_width="$(jq -sr '[1,(.[]|.number|tostring|length)]|max' "$items_file")" || { fail "表格编号宽度计算失败"; return 1; }
+  state_width="$(jq -sr '["State",(.[]|.state|tostring|gsub("[\r\n\t]";" "))]|map(length)|max' "$items_file")" || { fail "表格状态宽度计算失败"; return 1; }
+  minimum_columns=$((type_width + number_width + state_width + updated_width + 34)); flexible=$((columns - type_width - number_width - state_width - updated_width - 19))
+  (( columns >= minimum_columns )) || { fail "终端仅 ${columns} 列，表格至少需要 ${minimum_columns} 列；请使用 --plain"; return 1; }
+  title_reserve=$((flexible - 10)); (( title_reserve > 20 )) && title_reserve=20
+  (( title_reserve < 5 )) && title_reserve=5; max_repo=$((flexible - title_reserve)); (( repo_width > max_repo )) && repo_width=$max_repo; title_width=$((flexible - repo_width))
   top="┌$(repeat_char "─" "$((type_width + 2))")┬$(repeat_char "─" "$((repo_width + 2))")┬$(repeat_char "─" "$((number_width + 2))")┬$(repeat_char "─" "$((state_width + 2))")┬$(repeat_char "─" "$((updated_width + 2))")┬$(repeat_char "─" "$((title_width + 2))")┐"
   middle="├$(repeat_char "─" "$((type_width + 2))")┼$(repeat_char "─" "$((repo_width + 2))")┼$(repeat_char "─" "$((number_width + 2))")┼$(repeat_char "─" "$((state_width + 2))")┼$(repeat_char "─" "$((updated_width + 2))")┼$(repeat_char "─" "$((title_width + 2))")┤"
   bottom="└$(repeat_char "─" "$((type_width + 2))")┴$(repeat_char "─" "$((repo_width + 2))")┴$(repeat_char "─" "$((number_width + 2))")┴$(repeat_char "─" "$((state_width + 2))")┴$(repeat_char "─" "$((updated_width + 2))")┴$(repeat_char "─" "$((title_width + 2))")┘"
-  printf -v header_type "%-*s" "$type_width" "Type"
-  printf -v header_repo "%-*s" "$repo_width" "Repository"
-  printf -v header_number "%*s" "$number_width" "#"
-  printf -v header_state "%-*s" "$state_width" "State"
-  printf -v header_updated "%-*s" "$updated_width" "Updated"
-  printf -v header_title "%-*s" "$title_width" "Title"
+  printf -v header_type "%-*s" "$type_width" "Type"; printf -v header_repo "%-*s" "$repo_width" "Repository"
+  printf -v header_number "%*s" "$number_width" "#"; printf -v header_state "%-*s" "$state_width" "State"
+  printf -v header_updated "%-*s" "$updated_width" "Updated"; printf -v header_title "%-*s" "$title_width" "Title"
   {
     printf '%s\n' "$top"
     if (( use_color == 1 )); then
@@ -741,18 +723,34 @@ render_table() {
       --argjson uw "$updated_width" \
       --argjson titlew "$title_width" '
       def clean: tostring | gsub("[\r\n\t]"; " ");
+      def zero_width: . == 8205 or (. >= 768 and . <= 879) or (. >= 6832 and . <= 6911)
+        or (. >= 7616 and . <= 7679) or (. >= 8400 and . <= 8447)
+        or (. >= 65024 and . <= 65039) or (. >= 127995 and . <= 127999);
+      def wide: (. >= 4352 and . <= 4607) or (. >= 9001 and . <= 9002) or (. >= 9728 and . <= 10175)
+        or (. >= 11904 and . <= 42191) or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
+        or (. >= 65040 and . <= 65135) or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510)
+        or (. >= 127744 and . <= 129791) or (. >= 131072 and . <= 262141);
+      def base_width: if wide then 2 else 1 end;
+      def display_width: reduce explode[] as $cp ({width:0,joined:false,regional:false};
+        if $cp == 8205 then .joined = true elif ($cp | zero_width) then .
+        elif ($cp >= 127462 and $cp <= 127487) then
+          if .regional then .regional = false else .width += 2 | .regional = true end
+        elif .joined then .joined = false | .regional = false
+        else .width += ($cp | base_width) | .regional = false end) | .width;
       def trunc($width):
-        if length > $width
-        then .[0:($width - 1)] + "…"
-        else .
-        end;
-      def padr($width):
-        trunc($width) as $value
-        | $value + (" " * ($width - ($value | length)));
-      def padl($width):
-        trunc($width) as $value
-        | (" " * ($width - ($value | length))) + $value;
-      .[]
+        if display_width <= $width then . else
+          reduce explode[] as $cp ({out:[],width:0,joined:false,regional:false,done:false};
+            if .done then . elif $cp == 8205 then .out += [$cp] | .joined = true
+            elif ($cp | zero_width) then .out += [$cp] elif ($cp >= 127462 and $cp <= 127487) then
+              if .regional then .out += [$cp] | .regional = false elif .width + 2 <= $width - 1
+              then .out += [$cp] | .width += 2 | .regional = true else .done = true end
+            elif .joined then .out += [$cp] | .joined = false | .regional = false
+            elif .width + ($cp | base_width) <= $width - 1 then
+              .out += [$cp] | .width += ($cp | base_width) | .regional = false
+            else .done = true end) | (.out | implode) + "…" end;
+      def padr($width): trunc($width) as $value | $value + (" " * ($width - ($value | display_width)));
+      def padl($width): trunc($width) as $value | (" " * ($width - ($value | display_width))) + $value;
+      sort_by([(.repo_full_name | ascii_downcase),.repo_full_name,.kind,.number])[]
       | (if .kind == "issue" then "Issue"
          elif .kind == "pr" then "PR"
          elif .kind == "discussion" then "Discussion"

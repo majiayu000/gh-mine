@@ -55,7 +55,7 @@ if [[ -n "$EXPECTED_SHA256" ]]; then
   fi
 fi
 
-if ! chmod +x "$TEMP_FILE"; then
+if ! chmod 0755 "$TEMP_FILE"; then
   echo "install: 无法设置可执行权限，保留已有安装" >&2
   exit 1
 fi

@@ -275,6 +275,35 @@ test_api_failures() {
 }
 
 test_scope_combinations() {
+  begin_case authored_cross_repo
+  empty_rest "${CASE_DIR}/fixtures/rest-issue-1.json"
+  status="$(run_cli --account me --authored --issues --json)"
+  assert_eq 0 "$status" "authored cross-repo status"
+  assert_contains "${CASE_DIR}/requests.log" "author%3Ame" "authored qualifier"
+  assert_not_contains "${CASE_DIR}/requests.log" "user%3Ame" \
+    "authored excludes owner qualifier"
+
+  begin_case assigned_moved_cross_repo
+  empty_rest "${CASE_DIR}/fixtures/rest-moved-1.json"
+  status="$(run_cli --account me --assigned --moved-to-discussion --json)"
+  assert_eq 0 "$status" "assigned moved cross-repo status"
+  assert_contains "${CASE_DIR}/requests.log" "assignee%3Ame" "assigned qualifier"
+  assert_not_contains "${CASE_DIR}/requests.log" "user%3Ame" \
+    "assigned moved excludes owner qualifier"
+
+  begin_case default_owner_scope
+  empty_rest "${CASE_DIR}/fixtures/rest-issue-1.json"
+  status="$(run_cli --account me --issues --json)"
+  assert_eq 0 "$status" "default owner status"
+  assert_contains "${CASE_DIR}/requests.log" "user%3Ame" "default owner qualifier"
+
+  begin_case default_moved_owner_scope
+  empty_rest "${CASE_DIR}/fixtures/rest-moved-1.json"
+  status="$(run_cli --account me --moved-to-discussion --json)"
+  assert_eq 0 "$status" "default moved owner status"
+  assert_contains "${CASE_DIR}/requests.log" "user%3Ame" \
+    "default moved owner qualifier"
+
   begin_case repo_scope
   empty_rest "${CASE_DIR}/fixtures/rest-issue-1.json"
   status="$(run_cli --account me --repo acme/repo --authored --issues --json)"
@@ -282,11 +311,54 @@ test_scope_combinations() {
   assert_contains "${CASE_DIR}/requests.log" "repo%3Aacme%2Frepo" "repo qualifier"
   assert_contains "${CASE_DIR}/requests.log" "author%3Ame" "author qualifier"
 
+  begin_case moved_repo_scope
+  empty_rest "${CASE_DIR}/fixtures/rest-moved-1.json"
+  status="$(run_cli --account me --repo acme/repo --assigned \
+    --moved-to-discussion --json)"
+  assert_eq 0 "$status" "moved repo+scope intersection status"
+  assert_contains "${CASE_DIR}/requests.log" "repo%3Aacme%2Frepo" \
+    "moved repo qualifier"
+  assert_contains "${CASE_DIR}/requests.log" "assignee%3Ame" \
+    "moved assignee qualifier"
+
   begin_case reject_discussion_scope
   status="$(run_cli --account me --repo acme/repo --authored --discussions)"
   assert_eq 2 "$status" "discussion scope rejected even with repo"
   assert_eq "" "$(cat "${CASE_DIR}/requests.log")" "rejection occurs before API"
   pass scope_combinations
+}
+
+selector_case() {
+  local name="$1" expected="$2"
+  shift 2
+  begin_case "$name"
+  case "$expected" in
+    issue|pr|moved) empty_rest "${CASE_DIR}/fixtures/rest-${expected}-1.json" ;;
+    discussion)
+      repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 0 \
+        '[]' false null ;;
+    hygiene)
+      empty_rest "${CASE_DIR}/fixtures/rest-moved-1.json"
+      repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 0 \
+        '[]' false null ;;
+  esac
+  status="$(run_cli --account me --repo acme/repo "$@" --json)"
+  assert_eq 0 "$status" "last selector wins: $name"
+  expected_requests=1; [[ "$expected" == "hygiene" ]] && expected_requests=2
+  assert_eq "$expected_requests" "$(grep -c '^api ' "${CASE_DIR}/requests.log")" \
+    "selector request count: $name"
+}
+
+test_selector_modes() {
+  selector_case discussion_then_issue issue --discussions --issues
+  selector_case issue_then_discussion discussion --issues --discussions
+  selector_case moved_then_pr pr --moved-to-discussion --prs
+  selector_case pr_then_moved moved --prs --moved-to-discussion
+  selector_case discussion_then_moved moved --discussions --moved-to-discussion
+  selector_case moved_then_discussion discussion --moved-to-discussion --discussions
+  selector_case issue_then_hygiene hygiene --issues --hygiene
+  selector_case hygiene_then_issue issue --hygiene --issues
+  pass selector_modes
 }
 
 test_label_filters() {
@@ -430,6 +502,15 @@ test_discussion_state() {
   assert_eq '[["open",null],["closed","2024-02-01T00:00:00Z"]]' \
     "$(jq -c '[.[] | [.state,.closed_at]]' "${CASE_DIR}/stdout")" \
     "real discussion state and closed_at"
+
+  begin_case canonical_repo_casing
+  canonical_node="$(discussion_node 3 "2024-01-01T00:00:00Z" false null)"
+  repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" Acme/Repo 1 \
+    "[$canonical_node]" false null
+  status="$(run_cli --account me --repo acme/repo --discussions --json)"
+  assert_eq 0 "$status" "canonical repo casing status"
+  assert_eq '"Acme/Repo"' "$(jq -c '.[0].repo_full_name' "${CASE_DIR}/stdout")" \
+    "explicit repo uses canonical API casing"
   pass discussion_state
 }
 
@@ -460,6 +541,8 @@ test_discussion_repo_enumeration() {
     "$(jq -c '[.[].repo_full_name]' "${CASE_DIR}/stdout")" \
     "outer pages and same-name repos"
   assert_eq 2 "$(cat "${CASE_DIR}/outer.count")" "outer repository cursor used"
+  assert_contains "${CASE_DIR}/requests.log" "-F repoFirst=20" \
+    "outer repository page is node-budget safe"
   assert_eq 1 "$(cat "${CASE_DIR}/repo.count")" "selective repo follow-up"
   assert_contains "${CASE_DIR}/requests.log" "-f owner=two" "follow-up only needy repo"
   pass discussion_repo_enumeration
@@ -619,6 +702,9 @@ CURL
   assert_eq 0 "$status" "installer success in path with spaces"
   cmp "${CASE_DIR}/download" "${install_dir}/gh-mine" ||
     fail_test "installer success" "target mismatch"
+  installed_mode="$(stat -f '%Lp' "${install_dir}/gh-mine" 2>/dev/null ||
+    stat -c '%a' "${install_dir}/gh-mine")"
+  assert_eq 755 "$installed_mode" "installer sets shared executable mode"
 
   cp "${CASE_DIR}/old" "${install_dir}/gh-mine"
   status=0
@@ -694,7 +780,7 @@ should_run() {
 }
 
 tests=(
-  rest_pagination api_failures scope_combinations label_filters json_contract
+  rest_pagination api_failures scope_combinations selector_modes label_filters json_contract
   discussion_pagination discussion_stale_scan discussion_state
   discussion_repo_enumeration table_default table_width_and_repo_identity
   color_modes renderer_modes table_unsafe_text installer_atomicity

@@ -80,13 +80,14 @@ gh-mine -h | --help
 | `--assigned` | `assignee:<login>` | everything assigned to you, across all repos |
 
 The default output is one Unicode table with fixed columns:
-`Type | Repository | # | State | Updated | Title`. Repository values use full
-`owner/name` identity, so repositories with the same short name remain distinct.
-The `#` column is right-aligned, unsafe control whitespace is normalized, and
-long titles are truncated at Unicode code-point boundaries. TTY headers use
-restrained cyan/bold styling; pipes, `NO_COLOR`, and JSON never contain ANSI.
-If the terminal is too narrow, the table expands past it to preserve the full
-repository name and a readable Title column of at least 20 characters.
+`Type | Repository | # | State | Updated | Title`. Rows are sorted by full
+repository name. Repository identity still uses `owner/name`, while narrow
+table cells may show an ellipsis; `--plain` and `--json` retain the complete
+value. The `#` column is right-aligned, unsafe control whitespace is normalized,
+and Repository/Title truncation accounts for Chinese, Emoji, and combining
+characters so every row fits the terminal width. TTY headers use restrained
+cyan/bold styling; pipes, `NO_COLOR`, and JSON never contain ANSI. Terminals
+too narrow for the minimum six-column layout receive an explicit `--plain` hint.
 Use `--plain` for the legacy grouped view. `--plain --json` is invalid.
 
 ### Example output

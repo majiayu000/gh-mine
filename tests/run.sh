@@ -585,21 +585,6 @@ test_table_width_and_repo_identity() {
   ' "${CASE_DIR}/normal.tty" | sed -n '1p')"
   assert_eq 100 "$normal_length" "normal border matches tput columns"
 
-  begin_case table_narrow
-  full_repo="long-owner/repository-with-a-very-long-name"
-  make_rest "${CASE_DIR}/fixtures/rest-issue-1.json" 1 false 1 \
-    long-owner repository-with-a-very-long-name 123
-  run_tty_cli "${CASE_DIR}/narrow.tty" 20 --account me --issues ||
-    fail_test "narrow pseudo TTY" "command failed"
-  narrow_length="$(jq -Rr '
-    rtrimstr("\r") | select(index("┌") != null) |
-    index("┌") as $start | .[$start:] | length
-  ' "${CASE_DIR}/narrow.tty" | sed -n '1p')"
-  minimum_columns=$((10 + ${#full_repo} + 3 + 5 + 10 + 20 + 19))
-  assert_eq "$minimum_columns" "$narrow_length" \
-    "narrow border expands to readable minimum"
-  assert_contains "${CASE_DIR}/narrow.tty" "$full_repo" \
-    "narrow table preserves full repository"
   pass table_width_and_repo_identity
 }
 
@@ -779,11 +764,13 @@ should_run() {
   return 1
 }
 
+# shellcheck source=tests/table_rendering_regressions.sh
+. "${ROOT}/tests/table_rendering_regressions.sh"
 tests=(
   rest_pagination api_failures scope_combinations selector_modes label_filters json_contract
   discussion_pagination discussion_stale_scan discussion_state
   discussion_repo_enumeration table_default table_width_and_repo_identity
-  color_modes renderer_modes table_unsafe_text installer_atomicity
+  table_fit_and_sort color_modes renderer_modes table_unsafe_text installer_atomicity
 )
 
 for test_name in "${tests[@]}"; do

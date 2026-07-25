@@ -54,12 +54,14 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 - Covers：B-001、B-002、B-003、B-004、B-005、B-014
 - Done-when：
   - 默认输出单一 Unicode 表格并以 `repo_full_name` 唯一分组/显示。
+  - 默认表格按仓库全名稳定排序；Repository/Title 按显示宽度截断且不越过终端。
   - `--plain`、`--json` 和非法组合符合 product spec。
   - TTY/`NO_COLOR`、终端宽度、异常标题和空结果行为确定。
   - README 包含新默认输出、迁移方式和 JSON 新字段。
 - Verify：
   - `bash tests/run.sh table_default`
   - `bash tests/run.sh table_width_and_repo_identity`
+  - `bash tests/run.sh table_fit_and_sort`
   - `bash tests/run.sh color_modes`
   - `bash tests/run.sh renderer_modes`
   - `bash tests/run.sh table_unsafe_text`
@@ -91,8 +93,8 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
   - ShellCheck 为阻断 job，无 `|| true`。
   - CONTRIBUTING 列出本地完整验证命令。
 - Verify：
-  - `bash -n gh-mine install.sh tests/run.sh`
-  - `shellcheck gh-mine install.sh tests/run.sh`
+  - `bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
+  - `shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
   - `bash tests/run.sh`
   - PR CI 全绿。
 
@@ -108,8 +110,8 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
   - 独立 reviewer lane 对照 GH-1 和三个 spec 文件返回 clean/non_blocking。
   - PR gate、review threads、merge state、CI 均使用当前 head 证据。
 - Verify：
-  - `bash -n gh-mine install.sh tests/run.sh`
-  - `shellcheck gh-mine install.sh tests/run.sh`
+  - `bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
+  - `shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
   - `bash tests/run.sh`
   - `git diff --check`
 
@@ -124,8 +126,8 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 
 ## 验证
 
-- [ ] `bash -n gh-mine install.sh tests/run.sh`
-- [ ] `shellcheck gh-mine install.sh tests/run.sh`
+- [ ] `bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
+- [ ] `shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
 - [ ] `bash tests/run.sh`
 - [ ] `git diff --check`
 - [ ] Product IDs：
@@ -140,8 +142,8 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 - `queue_mode: full_queue_drain`，当前只有 GH-1。
 - `pr_tier: heavy`：独立 reviewer 认定该变更同时涉及 API 完整性、installer
   替换/校验和 CI enforcement，必须保留人工合并授权。
-- 2026-07-26 用户确认 B-002 的窄终端决策：保留完整仓库名和至少 20 字符标题；
-  当物理终端更窄时允许表格使用最小可读宽度并横向超出。
+- 2026-07-26 用户随后纠正 B-002：默认表格必须严格适配终端显示宽度，允许
+  Repository/Title 截断；完整仓库名由 `--plain`/`--json` 保留，不再允许横向溢出。
 - 实现基线为本地 `6c07e76`，其中包含尚未推送到 `origin/main` 的 Discussion
   hygiene 功能；最终 PR 相对 `origin/main` 将同时包含该基线提交和 GH-1 实现，
   PR 描述必须明确这一点。

@@ -89,17 +89,20 @@ owned、non-fork 且启用 Discussions 的仓库，并在同一 outer query 中�
 不新增 `column`/Python/Rust 依赖，使用 Bash `printf` 和 `jq`：
 
 - 先把 title 中 `\r`/`\n`/`\t` 规范化为空格。
-- 终端宽度：TTY 时优先 `tput cols`，失败或非 TTY 时使用 120；先根据固定列、
-  完整仓库名和至少 20 字符的 Title 计算最小可读宽度，有效表格宽度取终端宽度
-  与该最小值的较大者。正常宽度下 Title 获得剩余空间；极窄终端允许横向超出，
-  以避免截断仓库身份或把 Title 压到 20 字符以下。
-- jq 负责按 Unicode code point 截断，避免拆分 UTF-8 byte；Bash 只对已截断
-  文本做 padding。East Asian 宽字符的视觉宽度差异作为已知限制，测试保证不会
-  产生非法 UTF-8 或破坏行数。
+- 终端宽度：TTY 时优先 `tput cols`，失败或非 TTY 时使用 120。固定列分配后
+  优先为 Title 保留最多 20 个显示单元，再把剩余空间分配给 Repository；
+  两列都允许以省略号截断。低于六列最小布局时明确失败并提示 `--plain`，禁止
+  通过扩大表格宽度静默溢出终端。
+- jq 通过 `explode` 计算终端显示单元宽度：常见 East Asian wide/Emoji 为 2，
+  组合字符、variation selector 和 ZWJ 为 0，并处理 regional-indicator 对与
+  ZWJ 序列。截断只发生在完整 code point 边界，padding 使用显示宽度而非
+  `length`；80/100/120 列的中英文混排 fixture 逐行校验实际显示宽度。
 - 使用 `┌─┬┐`、`├─┼┤`、`└─┴┘` 边框；表头仅在允许 color 时包裹
   bold/cyan ANSI，padding 在加 ANSI 前完成。
 - `Type` 映射为短显示值 `Issue`、`PR`、`Discussion`、`Moved`；机器 `kind`
   不变。末尾打印按 kind 的计数摘要。
+- 默认表格在渲染前按大小写不敏感的 `repo_full_name`、原始仓库名、kind、
+  number 排序；`--plain`/`--json` 的兼容顺序不因此改变。
 - `render_plain` 复用统一 JSONL，按 `repo_full_name` 分组，因此旧视觉样式保留
   但不再合并同名仓库。
 
@@ -119,8 +122,8 @@ owned、non-fork 且启用 Discussions 的仓库，并在同一 outer query 中�
 
 | Product invariant | Implementation area | Verification |
 | --- | --- | --- |
-| B-001 | `gh-mine` unified pipeline + `render_table` | `bash tests/run.sh table_default` |
-| B-002 | table width/padding + full repo identity | `bash tests/run.sh table_width_and_repo_identity` |
+| B-001 | `gh-mine` unified pipeline + sorted `render_table` | `bash tests/run.sh table_default table_fit_and_sort` |
+| B-002 | display-width-aware table allocation/truncation | `bash tests/run.sh table_width_and_repo_identity table_fit_and_sort` |
 | B-003 | color capability detection | `bash tests/run.sh color_modes` |
 | B-004 | renderer selection + empty result | `bash tests/run.sh renderer_modes` |
 | B-005 | common JSON projection | `bash tests/run.sh json_contract` |
@@ -135,7 +138,7 @@ owned、non-fork 且启用 Discussions 的仓库，并在同一 outer query 中�
 | B-014 | table cell normalization | `bash tests/run.sh table_unsafe_text` |
 | B-015 | `install.sh` staged replacement | `bash tests/run.sh installer_atomicity` |
 | B-016 | `tests/run.sh` scenario inventory | `bash tests/run.sh` |
-| B-017 | `.github/workflows/ci.yml` | `bash -n gh-mine install.sh tests/run.sh && shellcheck gh-mine install.sh tests/run.sh`；PR CI matrix 通过 |
+| B-017 | `.github/workflows/ci.yml` | `bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh && shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`；PR CI matrix 通过 |
 
 ## 数据流
 
@@ -178,8 +181,8 @@ read-only。installer 的唯一持久写入是最终经验证的目标 binary。
 
 ## 测试计划
 
-- [ ] Syntax：`bash -n gh-mine install.sh tests/run.sh`
-- [ ] Static lint：`shellcheck gh-mine install.sh tests/run.sh`
+- [ ] Syntax：`bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
+- [ ] Static lint：`shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`
 - [ ] Integration：`bash tests/run.sh`
 - [ ] Contract：`bash tests/run.sh json_contract`
 - [ ] Failure paths：`bash tests/run.sh api_failures installer_atomicity`

@@ -16,10 +16,10 @@ cd gh-mine
 ./gh-mine --help
 
 # syntax check (must pass)
-/bin/bash -n gh-mine install.sh tests/run.sh
+/bin/bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh
 
 # lint (must pass)
-shellcheck gh-mine install.sh tests/run.sh
+shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh
 
 # deterministic fake-gh behavior suite (never accesses GitHub)
 /bin/bash tests/run.sh
@@ -28,8 +28,8 @@ shellcheck gh-mine install.sh tests/run.sh
 ## Before opening a PR
 
 - Keep changes minimal and in scope.
-- Run `/bin/bash -n gh-mine install.sh tests/run.sh`.
-- Run `shellcheck gh-mine install.sh tests/run.sh`.
+- Run `/bin/bash -n gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`.
+- Run `shellcheck gh-mine install.sh tests/run.sh tests/table_rendering_regressions.sh`.
 - Run `/bin/bash tests/run.sh`.
 - Use rebase, not merge, to keep history clean.
 - DCO: sign your commits (`git commit -s`).

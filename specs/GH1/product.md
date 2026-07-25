@@ -34,11 +34,13 @@ REST/GraphQL 分页、Discussion 状态、仓库身份和失败传播存在静�
 1. **B-001** 默认人类输出必须用一个 Unicode 边框表格展示所有匹配项，每个
    item 恰好一行，列顺序固定为 `Type`、`Repository`、`#`、`State`、
    `Updated`、`Title`；同一次运行的不同 kind 不再拆成互相分离的缩进列表。
-2. **B-002** `Repository` 必须显示完整 `owner/name`，跨 owner 的同名仓库
-   不得被合并；`#` 必须右对齐。标题列使用剩余终端宽度且至少保留 20 个字符，
-   并在需要时按 Unicode 字符边界截断且以省略号结尾。当终端宽度不足以同时容纳
-   固定列、完整仓库名和 20 字符标题时，表格必须采用满足这些约束的最小可读宽度，
-   可以横向超出终端，但不得截断仓库身份。
+   表格行默认按 `repo_full_name` 不区分 ASCII 大小写排序，再以原始仓库名、
+   kind 和编号提供稳定次序。
+2. **B-002** `Repository` 必须以完整 `owner/name` 作为身份，跨 owner 的同名
+   仓库不得被合并；表格单元格可以用省略号截断显示，完整值继续由 `--plain` 和
+   `--json` 提供。`#` 必须右对齐；Repository 与 Title 必须按终端显示单元宽度
+   处理中文、Emoji 和组合字符。TTY 宽度满足最小六列布局时，每条边框和数据行
+   都不得超过 `tput cols`；宽度不足时必须明确失败并提示使用 `--plain`。
 3. **B-003** 仅当 stdout 是 TTY 且未设置 `NO_COLOR` 时，表头才使用克制的
    ANSI 粗体/青色；非 TTY、设置 `NO_COLOR` 或 `--json` 时不得输出 ANSI。
 4. **B-004** `--plain` 必须保留旧版分组文本；`--plain` 与 `--json` 同时出现
@@ -101,7 +103,7 @@ REST/GraphQL 分页、Discussion 状态、仓库身份和失败传播存在静�
 | Empty / missing input | covered: B-004、B-005、B-014 |
 | Error and failure paths | covered: B-006、B-007、B-015 |
 | Authorization / permission | N/A：CLI 不改变 GitHub 权限或认证，只读取当前 token 可见数据；认证失败由 B-007 覆盖 |
-| Concurrency / race / ordering | covered: B-009、B-013、B-015；API 结果按显式排序/游标消费，安装替换为原子步骤 |
+| Concurrency / race / ordering | covered: B-001、B-009、B-013、B-015；表格稳定排序，API 结果按游标消费，安装替换为原子步骤 |
 | Retry / repetition / idempotency | covered: B-007、B-015；每次运行使用独立临时状态 |
 | Illegal state transitions | covered: B-004、B-010、B-011 |
 | Compatibility / migration | covered: B-004、B-005、B-015 |

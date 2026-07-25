@@ -31,14 +31,12 @@ usage_error() {
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -i|--issues) want_issues=1; want_prs=0; shift ;;
-    -p|--prs) want_prs=1; want_issues=0; shift ;;
-    --discussions) want_issues=0; want_prs=0; want_discussions=1; shift ;;
+    -i|--issues) want_issues=1; want_prs=0; want_discussions=0; want_moved_to_discussion=0; shift ;;
+    -p|--prs) want_prs=1; want_issues=0; want_discussions=0; want_moved_to_discussion=0; shift ;;
+    --discussions) want_issues=0; want_prs=0; want_discussions=1; want_moved_to_discussion=0; shift ;;
     --moved-to-discussion)
-      want_issues=0; want_prs=0; want_moved_to_discussion=1; shift ;;
-    --hygiene)
-      want_issues=0; want_prs=0; want_discussions=1
-      want_moved_to_discussion=1; shift ;;
+      want_issues=0; want_prs=0; want_discussions=0; want_moved_to_discussion=1; shift ;;
+    --hygiene) want_issues=0; want_prs=0; want_discussions=1; want_moved_to_discussion=1; shift ;;
     --discussion-limit) [[ $# -ge 2 ]] ||
       usage_error "--discussion-limit 需要值"
       discussion_limit="$2"; shift 2 ;;
@@ -150,7 +148,7 @@ build_query() {
   local query="is:${search_kind} is:open"
   if [[ -n "$repo" ]]; then
     query="repo:$(repo_full_name) ${query}"
-  else
+  elif [[ -z "$scope" ]]; then
     query="user:${account} ${query}"
   fi
   case "$scope" in
@@ -163,7 +161,7 @@ build_moved_query() {
   local query="is:issue is:closed discussions/ in:body,comments"
   if [[ -n "$repo" ]]; then
     query="repo:$(repo_full_name) ${query}"
-  else
+  elif [[ -z "$scope" ]]; then
     query="user:${account} ${query}"
   fi
   case "$scope" in
@@ -540,11 +538,13 @@ collect_explicit_repo_discussions() {
     fail "Discussion repository 返回 GraphQL errors (${repo_full})"
     return 1
   fi
-  if ! jq -e --arg repo "$repo_full" '
-    .data.repository != null
-    and .data.repository.nameWithOwner == $repo
-    and (.data.repository.hasDiscussionsEnabled | type == "boolean")
-  ' "$response" >/dev/null; then
+  if ! repo_full="$(jq -er --arg repo "$repo_full" '
+    .data.repository as $repository
+    | select($repository != null
+      and ($repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase)
+      and ($repository.hasDiscussionsEnabled | type == "boolean"))
+    | $repository.nameWithOwner
+  ' "$response")"; then
     fail "Discussion repository 为空或响应无效 (${repo_full})"
     return 1
   fi
@@ -562,7 +562,7 @@ collect_owned_repo_discussions() {
   first="$(discussion_first_size)"
   while :; do
     response="${run_dir}/outer-${page}.json"
-    args=(api graphql -f account="$account" -F repoFirst=100
+    args=(api graphql -f account="$account" -F repoFirst=20
       -F discussionFirst="$first")
     [[ -n "$repo_cursor" ]] && args+=(-f repoCursor="$repo_cursor")
     # shellcheck disable=SC2016

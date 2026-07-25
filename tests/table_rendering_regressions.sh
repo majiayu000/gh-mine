@@ -60,16 +60,47 @@ test_table_fit_and_sort() {
     assert_eq "$columns" "$widths" \
       "all table rows fit ${columns} display columns"
   done
-  assert_not_contains "${CASE_DIR}/table-80.tty" \
-    "zeta/repository-with-a-very-long-name" \
-    "narrow table truncates repository"
+  assert_contains "${CASE_DIR}/table-80.tty" \
+    "repository-with-a-very-long-name" \
+    "narrow table keeps complete short repository name"
+  assert_not_contains "${CASE_DIR}/table-80.tty" "…" \
+    "default table never ellipsizes repository names"
 
   status="$(run_cli --account me --issues)"
   assert_eq 0 "$status" "repository sort status"
   repos="$(awk -F '│' '/^│ Issue/ {
     value=$3; sub(/^ +/, "", value); sub(/ +$/, "", value); print value
   }' "${CASE_DIR}/stdout" | paste -sd ',' -)"
-  assert_eq "Alpha/short,beta/middle,zeta/repository-with-a-very-long-name" \
-    "$repos" "default table sorts by repository name"
+  assert_eq "middle,repository-with-a-very-long-name,short" \
+    "$repos" "default table sorts by short repository name"
   pass table_fit_and_sort
+}
+
+test_table_repository_wrap() {
+  begin_case table_repository_wrap
+  local long_repo reconstructed widths
+  long_repo="repository-with-an-extremely-long-name-that-must-wrap-without-ellipsis"
+  make_rest "${CASE_DIR}/fixtures/rest-issue-1.json" 1 false 1 \
+    acme "$long_repo" 42
+
+  run_tty_cli "${CASE_DIR}/wrapped.tty" 80 --account me --issues ||
+    fail_test "wrapped repository pseudo TTY" "command failed"
+  widths="$(table_display_widths "${CASE_DIR}/wrapped.tty" |
+    sort -u | paste -sd ',' -)"
+  assert_eq 80 "$widths" "wrapped repository rows fit terminal width"
+  assert_not_contains "${CASE_DIR}/wrapped.tty" "…" \
+    "wrapped repository contains no ellipsis"
+  reconstructed="$(awk -F '│' '
+    /^│/ {
+      type=$2; repo=$3
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", type)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", repo)
+      if (type == "Issue" || (type == "" && repo != "")) {
+        printf "%s", repo
+      }
+    }
+  ' "${CASE_DIR}/wrapped.tty")"
+  assert_eq "$long_repo" "$reconstructed" \
+    "wrapped repository reconstructs the complete short name"
+  pass table_repository_wrap
 }

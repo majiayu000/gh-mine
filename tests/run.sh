@@ -556,7 +556,11 @@ test_table_default() {
   assert_contains "${CASE_DIR}/stdout" "┌" "Unicode top border"
   assert_contains "${CASE_DIR}/stdout" "Type" "fixed Type column"
   assert_contains "${CASE_DIR}/stdout" "Repository" "fixed Repository column"
-  assert_contains "${CASE_DIR}/stdout" "acme/repo" "full repository shown"
+  assert_contains "${CASE_DIR}/stdout" "repo" "short repository name shown"
+  assert_not_contains "${CASE_DIR}/stdout" "acme/repo" "owner hidden without collision"
+  assert_not_contains "${CASE_DIR}/stdout" "State" "State omitted from default table"
+  assert_not_contains "${CASE_DIR}/stdout" "Title" "Title omitted from default table"
+  assert_not_contains "${CASE_DIR}/stdout" "title-1" "item title omitted from default table"
   assert_contains "${CASE_DIR}/stdout" "Total: 1 (Issue 1)" "kind summary"
   pass table_default
 }
@@ -650,10 +654,15 @@ test_table_unsafe_text() {
   mv "${CASE_DIR}/unsafe.next" "${CASE_DIR}/fixtures/rest-issue-1.json"
   status="$(run_cli --account me --issues)"
   assert_eq 0 "$status" "unsafe title status"
+  assert_not_contains "${CASE_DIR}/stdout" "one" \
+    "default table omits unsafe title"
+
+  status="$(run_cli --account me --issues --plain)"
+  assert_eq 0 "$status" "unsafe plain title status"
   assert_contains "${CASE_DIR}/stdout" "one two three four" \
-    "control whitespace sanitized"
+    "plain control whitespace sanitized"
   assert_eq 1 "$(grep -c 'one two three four' "${CASE_DIR}/stdout")" \
-    "unsafe title remains one row"
+    "unsafe plain title remains one row"
   pass table_unsafe_text
 }
 
@@ -770,7 +779,8 @@ tests=(
   rest_pagination api_failures scope_combinations selector_modes label_filters json_contract
   discussion_pagination discussion_stale_scan discussion_state
   discussion_repo_enumeration table_default table_width_and_repo_identity
-  table_fit_and_sort color_modes renderer_modes table_unsafe_text installer_atomicity
+  table_fit_and_sort table_repository_wrap color_modes renderer_modes
+  table_unsafe_text installer_atomicity
 )
 
 for test_name in "${tests[@]}"; do

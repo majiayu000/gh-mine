@@ -19,7 +19,7 @@ table_display_widths() {
              or (. >= 65072 and . <= 65135)
              or (. >= 65280 and . <= 65376)
              or (. >= 65504 and . <= 65510)
-             or (. >= 127744 and . <= 129791)
+             or (. >= 126976 and . <= 129791)
           then 2
           else 1
           end
@@ -36,7 +36,7 @@ test_table_fit_and_sort() {
   begin_case table_fit_and_sort
   make_rest "${CASE_DIR}/fixtures/rest-issue-1.json" 3 false 1 \
     zeta repository-with-a-very-long-name 300
-  jq '.items[0].title = "中文 😀 café title that must truncate safely"
+  jq '.items[0].title = "中文 🀄🃏 😀 café title that must truncate safely"
       | .items += [
         {
           repository_url:"https://api.github.com/repos/Alpha/short",

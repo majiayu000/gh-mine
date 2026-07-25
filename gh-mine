@@ -729,7 +729,7 @@ render_table() {
       def wide: (. >= 4352 and . <= 4607) or (. >= 9001 and . <= 9002) or (. >= 9728 and . <= 10175)
         or (. >= 11904 and . <= 42191) or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255)
         or (. >= 65040 and . <= 65135) or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510)
-        or (. >= 127744 and . <= 129791) or (. >= 131072 and . <= 262141);
+        or (. >= 126976 and . <= 129791) or (. >= 131072 and . <= 262141);
       def base_width: if wide then 2 else 1 end;
       def display_width: reduce explode[] as $cp ({width:0,joined:false,regional:false};
         if $cp == 8205 then .joined = true elif ($cp | zero_width) then .

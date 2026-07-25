@@ -702,8 +702,8 @@ CURL
   assert_eq 0 "$status" "installer success in path with spaces"
   cmp "${CASE_DIR}/download" "${install_dir}/gh-mine" ||
     fail_test "installer success" "target mismatch"
-  installed_mode="$(stat -f '%Lp' "${install_dir}/gh-mine" 2>/dev/null ||
-    stat -c '%a' "${install_dir}/gh-mine")"
+  installed_mode="$(stat -c '%a' "${install_dir}/gh-mine" 2>/dev/null ||
+    stat -f '%Lp' "${install_dir}/gh-mine")"
   assert_eq 755 "$installed_mode" "installer sets shared executable mode"
 
   cp "${CASE_DIR}/old" "${install_dir}/gh-mine"

@@ -88,21 +88,22 @@ owned、non-fork 且启用 Discussions 的仓库，并在同一 outer query 中�
 
 不新增 `column`/Python/Rust 依赖，使用 Bash `printf` 和 `jq`：
 
-- 先把 title 中 `\r`/`\n`/`\t` 规范化为空格。
+- 默认表格只渲染 Type、Repository、编号和更新时间；State 与 Title 由
+  `--plain`/`--json` 保留，plain renderer 继续把 title 中
+  `\r`/`\n`/`\t` 规范化为空格。
 - 终端宽度：TTY 时优先 `tput cols`，失败或非 TTY 时使用 120。固定列分配后
-  优先为 Title 保留最多 20 个显示单元，再把剩余空间分配给 Repository；
-  两列都允许以省略号截断。低于六列最小布局时明确失败并提示 `--plain`，禁止
-  通过扩大表格宽度静默溢出终端。
-- jq 通过 `explode` 计算终端显示单元宽度：常见 East Asian wide/Emoji 为 2，
-  组合字符、variation selector 和 ZWJ 为 0，并处理 regional-indicator 对与
-  ZWJ 序列。截断只发生在完整 code point 边界，padding 使用显示宽度而非
-  `length`；80/100/120 列的中英文混排 fixture 逐行校验实际显示宽度。
+  把剩余空间全部分配给 Repository。低于四列最小布局时明确失败并提示
+  `--plain`，禁止通过扩大表格宽度静默溢出终端。
+- Repository 默认取 `repo` 短名称；只有不同 `repo_full_name` 共享同一短名称
+  时才显示 `owner/name`。名称按列宽切成连续片段并输出续行，不添加省略号，也
+  不丢弃任何字符；80/100/120 列 fixture 逐行校验实际显示宽度，超长名称测试
+  会把所有续行重新拼接并与原值比较。
 - 使用 `┌─┬┐`、`├─┼┤`、`└─┴┘` 边框；表头仅在允许 color 时包裹
   bold/cyan ANSI，padding 在加 ANSI 前完成。
 - `Type` 映射为短显示值 `Issue`、`PR`、`Discussion`、`Moved`；机器 `kind`
   不变。末尾打印按 kind 的计数摘要。
-- 默认表格在渲染前按大小写不敏感的 `repo_full_name`、原始仓库名、kind、
-  number 排序；`--plain`/`--json` 的兼容顺序不因此改变。
+- 默认表格在渲染前按大小写不敏感的短仓库名、原始短名称、`repo_full_name`、
+  kind、number 排序；`--plain`/`--json` 的兼容顺序不因此改变。
 - `render_plain` 复用统一 JSONL，按 `repo_full_name` 分组，因此旧视觉样式保留
   但不再合并同名仓库。
 

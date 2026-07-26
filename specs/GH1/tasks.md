@@ -53,8 +53,9 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
 - Writable files：`gh-mine`、`README.md`、`tests/run.sh`
 - Covers：B-001、B-002、B-003、B-004、B-005、B-014
 - Done-when：
-  - 默认输出单一 Unicode 表格并以 `repo_full_name` 唯一分组/显示。
-  - 默认表格按仓库全名稳定排序；Repository/Title 按显示宽度截断且不越过终端。
+  - 默认输出 Type、Repository、编号和更新时间四列 Unicode 表格。
+  - 默认表格按短仓库名稳定排序；短名称完整显示，跨 owner 同名时用
+    `repo_full_name` 消歧，超长名称续行且不使用省略号。
   - `--plain`、`--json` 和非法组合符合 product spec。
   - TTY/`NO_COLOR`、终端宽度、异常标题和空结果行为确定。
   - README 包含新默认输出、迁移方式和 JSON 新字段。
@@ -144,6 +145,8 @@ GH-1 — https://github.com/majiayu000/gh-mine/issues/1
   替换/校验和 CI enforcement，必须保留人工合并授权。
 - 2026-07-26 用户随后纠正 B-002：默认表格必须严格适配终端显示宽度，允许
   Repository/Title 截断；完整仓库名由 `--plain`/`--json` 保留，不再允许横向溢出。
+- 2026-07-26 用户再次纠正默认表格：State 与 Title 不需要展示；Repository
+  必须优先显示完整短名称，禁止省略号，超长名称通过续行保留全部字符。
 - 实现基线为本地 `6c07e76`，其中包含尚未推送到 `origin/main` 的 Discussion
   hygiene 功能；最终 PR 相对 `origin/main` 将同时包含该基线提交和 GH-1 实现，
   PR 描述必须明确这一点。

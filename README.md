@@ -34,8 +34,9 @@ The installer stages the download in the target directory, validates Bash
 syntax, and atomically replaces an existing install only after validation. Set
 `GH_MINE_VERSION` to install another tag, branch, or commit. The value must be a
 single Git ref: letters, digits, `.`, `_`, `-`, and `/` only — no `..`, no
-leading or trailing `/`, and no empty path segments (this blocks
-`raw.githubusercontent.com` path traversal into other repos). For an exact
+`.`-only path segments, no leading or trailing `/`, and no empty path segments
+(this blocks `raw.githubusercontent.com` path traversal / silent `./`
+normalization into other refs). For an exact
 integrity check, also set `GH_MINE_SHA256` to the expected 64-digit SHA256:
 
 ```bash

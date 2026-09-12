@@ -806,6 +806,10 @@ CURL
   reject_version "empty segment" 'feature//evil'
   reject_version "trailing slash" 'main/'
   reject_version "dotdot alone" '..'
+  reject_version "dot-only segment" '.'
+  reject_version "leading dot segment" './main'
+  reject_version "mid dot segment" 'release/./candidate'
+  reject_version "trailing dot segment" 'main/.'
   reject_version "unsafe chars" 'main;curl'
   reject_version "space" 'feat branch'
 
@@ -827,6 +831,7 @@ CURL
   }
 
   accept_version "safe tag" 'v1.2.3'
+  accept_version "hyphen-prefixed tag" '-candidate'
   accept_version "safe branch" 'feature/foo'
   accept_version "safe SHA" 'a1b2c3d4e5f6789012345678901234567890abcd'
 

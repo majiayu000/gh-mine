@@ -762,6 +762,77 @@ CHMOD
   pass installer_atomicity
 }
 
+test_installer_version_validation() {
+  begin_case installer_version_validation
+  install_dir="${CASE_DIR}/install"
+  mkdir -p "$install_dir"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo old' >"${install_dir}/gh-mine"
+  cp "${install_dir}/gh-mine" "${CASE_DIR}/old"
+  : >"${CASE_DIR}/curl.log"
+  cat >"${CASE_DIR}/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_CURL_LOG}"
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "${FAKE_DOWNLOAD}" "$out"
+CURL
+  chmod +x "${CASE_DIR}/bin/curl"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo new' >"${CASE_DIR}/download"
+
+  reject_version() {
+    local label="$1" version="$2"
+    : >"${CASE_DIR}/curl.log"
+    status=0
+    PATH="${CASE_DIR}/bin:${PATH}" FAKE_DOWNLOAD="${CASE_DIR}/download" \
+      FAKE_CURL_LOG="${CASE_DIR}/curl.log" \
+      GH_MINE_INSTALL_DIR="$install_dir" GH_MINE_VERSION="$version" \
+      bash "${ROOT}/install.sh" >/dev/null 2>"${CASE_DIR}/reject.err" || status=$?
+    [[ "$status" -ne 0 ]] || fail_test "$label" "expected rejection"
+    cmp "${CASE_DIR}/old" "${install_dir}/gh-mine" ||
+      fail_test "$label" "old target overwritten"
+    [[ ! -s "${CASE_DIR}/curl.log" ]] ||
+      fail_test "$label" "curl ran before version rejection"
+    assert_contains "${CASE_DIR}/reject.err" "GH_MINE_VERSION" "$label stderr"
+  }
+
+  reject_version "traversal ../../" '../../attacker/malicious-repo/main'
+  reject_version "leading slash" '/main'
+  reject_version "empty segment" 'feature//evil'
+  reject_version "trailing slash" 'main/'
+  reject_version "dotdot alone" '..'
+  reject_version "unsafe chars" 'main;curl'
+  reject_version "space" 'feat branch'
+
+  accept_version() {
+    local label="$1" version="$2"
+    : >"${CASE_DIR}/curl.log"
+    cp "${CASE_DIR}/old" "${install_dir}/gh-mine"
+    status=0
+    PATH="${CASE_DIR}/bin:${PATH}" FAKE_DOWNLOAD="${CASE_DIR}/download" \
+      FAKE_CURL_LOG="${CASE_DIR}/curl.log" \
+      GH_MINE_INSTALL_DIR="$install_dir" GH_MINE_VERSION="$version" \
+      bash "${ROOT}/install.sh" >/dev/null 2>"${CASE_DIR}/accept.err" || status=$?
+    assert_eq 0 "$status" "$label status"
+    cmp "${CASE_DIR}/download" "${install_dir}/gh-mine" ||
+      fail_test "$label" "target mismatch"
+    assert_contains "${CASE_DIR}/curl.log" \
+      "raw.githubusercontent.com/majiayu000/gh-mine/${version}/gh-mine" \
+      "$label URL stays in-repo"
+  }
+
+  accept_version "safe tag" 'v1.2.3'
+  accept_version "safe branch" 'feature/foo'
+  accept_version "safe SHA" 'a1b2c3d4e5f6789012345678901234567890abcd'
+
+  pass installer_version_validation
+}
+
 should_run() {
   local name="$1"
   shift
@@ -780,7 +851,7 @@ tests=(
   discussion_pagination discussion_stale_scan discussion_state
   discussion_repo_enumeration table_default table_width_and_repo_identity
   table_fit_and_sort table_repository_wrap color_modes renderer_modes
-  table_unsafe_text installer_atomicity
+  table_unsafe_text installer_atomicity installer_version_validation
 )
 
 for test_name in "${tests[@]}"; do

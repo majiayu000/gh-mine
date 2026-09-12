@@ -4,11 +4,22 @@ set -euo pipefail
 
 REPO="majiayu000/gh-mine"
 VERSION="${GH_MINE_VERSION:-main}"
-SOURCE_URL="https://raw.githubusercontent.com/${REPO}/${VERSION}/gh-mine"
 INSTALL_DIR="${GH_MINE_INSTALL_DIR:-$HOME/.local/bin}"
 TARGET="${INSTALL_DIR}/gh-mine"
 EXPECTED_SHA256="${GH_MINE_SHA256:-}"
 TEMP_FILE=""
+
+# Reject refs that can climb out of /${REPO}/<ref>/ on raw.githubusercontent.com
+# via ../ normalization. Allowed: tag / branch / SHA chars only (A-Za-z0-9._/-),
+# no leading/trailing slash, no empty segments, no "..".
+if [[ ! "$VERSION" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] ||
+  [[ "$VERSION" == *..* ]] ||
+  [[ "$VERSION" == */ ]] ||
+  [[ "$VERSION" == *//* ]]; then
+  echo "install: GH_MINE_VERSION 非法（仅允许 tag/branch/SHA 字符，禁止 '..'、空段、首尾 /）: ${VERSION}" >&2
+  exit 1
+fi
+SOURCE_URL="https://raw.githubusercontent.com/${REPO}/${VERSION}/gh-mine"
 
 cleanup() {
   if [[ -n "$TEMP_FILE" ]]; then

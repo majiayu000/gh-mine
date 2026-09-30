@@ -568,7 +568,7 @@ collect_owned_repo_discussions() {
     # shellcheck disable=SC2016
     args+=(-f query='query OuterRepositories(
       $account:String!,$repoFirst:Int!,$repoCursor:String,$discussionFirst:Int!
-    ){user(login:$account){repositories(first:$repoFirst,after:$repoCursor,
+    ){repositoryOwner(login:$account){repositories(first:$repoFirst,after:$repoCursor,
       ownerAffiliations:[OWNER],isFork:false){totalCount nodes{nameWithOwner
         isFork hasDiscussionsEnabled discussions(first:$discussionFirst,
           orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{
@@ -586,29 +586,29 @@ collect_owned_repo_discussions() {
       return 1
     fi
     if ! jq -e '
-      .data.user != null
-      and (.data.user.repositories | type == "object")
-      and (.data.user.repositories.totalCount |
+      .data.repositoryOwner != null
+      and (.data.repositoryOwner.repositories | type == "object")
+      and (.data.repositoryOwner.repositories.totalCount |
            type == "number" and . >= 0 and floor == .)
-      and (.data.user.repositories.nodes | type == "array")
-      and all(.data.user.repositories.nodes[];
+      and (.data.repositoryOwner.repositories.nodes | type == "array")
+      and all(.data.repositoryOwner.repositories.nodes[];
         (.nameWithOwner | type == "string")
         and (.isFork | type == "boolean")
         and (.hasDiscussionsEnabled | type == "boolean"))
-      and (.data.user.repositories.pageInfo.hasNextPage | type == "boolean")
-      and ((.data.user.repositories.pageInfo.endCursor == null)
-           or (.data.user.repositories.pageInfo.endCursor | type == "string"))
+      and (.data.repositoryOwner.repositories.pageInfo.hasNextPage | type == "boolean")
+      and ((.data.repositoryOwner.repositories.pageInfo.endCursor == null)
+           or (.data.repositoryOwner.repositories.pageInfo.endCursor | type == "string"))
     ' "$response" >/dev/null; then
-      fail "Discussion 仓库枚举响应结构无效或 user 为空"
+      fail "Discussion 仓库枚举响应结构无效或 repositoryOwner 为空"
       return 1
     fi
     if (( total_repos < 0 )); then
-      total_repos="$(jq -r '.data.user.repositories.totalCount' "$response")"
-    elif [[ "$(jq -r '.data.user.repositories.totalCount' "$response")" != "$total_repos" ]]; then
+      total_repos="$(jq -r '.data.repositoryOwner.repositories.totalCount' "$response")"
+    elif [[ "$(jq -r '.data.repositoryOwner.repositories.totalCount' "$response")" != "$total_repos" ]]; then
       fail "Discussion 仓库枚举期间 totalCount 发生变化"
       return 1
     fi
-    jq -c '.data.user.repositories.nodes[]' "$response" >"$repos_file" ||
+    jq -c '.data.repositoryOwner.repositories.nodes[]' "$response" >"$repos_file" ||
       { fail "Discussion 仓库首屏暂存失败"; return 1; }
     while IFS= read -r repo_line || [[ -n "$repo_line" ]]; do
       repo_file="${run_dir}/outer-repo-${seen_repos}.json"
@@ -634,8 +634,8 @@ collect_owned_repo_discussions() {
       return 1
     fi
     (( seen_repos == total_repos )) && break
-    has_next="$(jq -r '.data.user.repositories.pageInfo.hasNextPage' "$response")"
-    repo_cursor="$(jq -r '.data.user.repositories.pageInfo.endCursor // empty' "$response")"
+    has_next="$(jq -r '.data.repositoryOwner.repositories.pageInfo.hasNextPage' "$response")"
+    repo_cursor="$(jq -r '.data.repositoryOwner.repositories.pageInfo.endCursor // empty' "$response")"
     if [[ "$has_next" != "true" || -z "$repo_cursor" ]]; then
       fail "Discussion 仓库枚举提前终止 (${seen_repos}/${total_repos})"
       return 1

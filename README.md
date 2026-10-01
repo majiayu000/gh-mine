@@ -11,10 +11,25 @@ repositories you own (excluding upstream repos you merely filed an issue against
 
 ## Why
 
-`gh issue list` and the GitHub notifications view mix everything together: issues
-you filed on upstream projects, PRs scattered across orgs, issues assigned to you
-on someone else's repo. `gh-mine` gives you three clean scopes so you only see
-what is actually yours.
+`gh issue list` lists issues in one repository. Cross-repository work needs a
+search or another view, and ownership is different from authorship or assignment.
+`gh-mine` combines open issues and pull requests while keeping these three scopes
+explicit.
+
+## Pick a task
+
+| Task | Command | Scope |
+| --- | --- | --- |
+| Triage open bugs in repositories you own | `gh-mine --issues --label bug --stale 30` | Owned repositories; updated more than 30 days ago |
+| Follow issues you filed upstream | `gh-mine --authored --issues` | Your authored issues across repositories |
+| Find PRs assigned to you | `gh-mine --assigned --prs` | Your assignments across repositories |
+| Review a repository's Discussion hygiene | `gh-mine --repo owner/repo --hygiene` | Repository scan; cannot combine with authored/assigned scopes |
+
+For a one-off custom query, the official [gh search issues](https://cli.github.com/manual/gh_search_issues)
+and [gh search prs](https://cli.github.com/manual/gh_search_prs) commands already support owner,
+author and assignee filters. Choose `gh-mine` when you want its combined issue/PR table,
+explicit owned/authored/assigned scopes, JSON output, or Discussion hygiene view.
+It is a standalone Bash utility using `gh`, not an installed `gh mine` extension.
 
 ## Requirements
 

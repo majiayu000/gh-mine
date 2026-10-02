@@ -362,12 +362,35 @@ test_selector_modes() {
 }
 
 test_label_filters() {
+  local failure message
   begin_case search_label_escape
   empty_rest "${CASE_DIR}/fixtures/rest-issue-1.json"
   status="$(run_cli --account me --issues --json --label 'say "hi"\path')"
   assert_eq 0 "$status" "quoted label status"
   assert_contains "${CASE_DIR}/requests.log" "label%3A%22say%20%5C%22hi%5C%22%5C%5Cpath%22" \
     "label is escaped as one quoted qualifier"
+
+  begin_case discussion_label_case
+  make_rest "${CASE_DIR}/fixtures/rest-moved-1.json" 1 false 1 acme repo 9
+  node="$(discussion_node 7 "2024-01-01T00:00:00Z" false null \
+    '["bUg","Needs Help"]' 2)"
+  missing_label="$(discussion_node 8 "2024-01-01T00:00:00Z" false null \
+    '["bug"]' 1)"
+  partial_label="$(discussion_node 10 "2024-01-01T00:00:00Z" false null \
+    '["bugfix","Needs Help"]' 2)"
+  repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 3 \
+    "[$node,$missing_label,$partial_label]" false null
+  status="$(run_cli --account me --repo acme/repo --hygiene \
+    --label BUG --label 'needs help' --json)"
+  assert_eq 0 "$status" "case-insensitive hygiene labels status"
+  assert_eq '[7]' \
+    "$(jq -c '[.[] | select(.kind == "discussion") | .number]' "${CASE_DIR}/stdout")" \
+    "case-insensitive labels require all exact names"
+  assert_eq '[9]' \
+    "$(jq -c '[.[] | select(.kind == "moved_to_discussion") | .number]' "${CASE_DIR}/stdout")" \
+    "case-insensitive hygiene retains Search results"
+  assert_contains "${CASE_DIR}/requests.log" 'label%3A%22BUG%22' \
+    "Search keeps requested label case"
 
   begin_case discussion_label_cursor
   labels100="$(jq -nc '[range(0;100) | "label-\(.)"]')"
@@ -377,13 +400,44 @@ test_label_filters() {
     "[$node]" false null
   jq -n '{data:{repository:{discussion:{labels:{
     totalCount:101,
-    nodes:[{name:"wanted"}],
+    nodes:[{name:"WaNtEd"}],
     pageInfo:{hasNextPage:false,endCursor:null}
   }}}}}' >"${CASE_DIR}/fixtures/graphql-labels-1.json"
-  status="$(run_cli --account me --repo acme/repo --discussions --label wanted --json)"
+  status="$(run_cli --account me --repo acme/repo --discussions --label WANTED \
+    --label LABEL-0 --json)"
   assert_eq 0 "$status" "label beyond first 100 status"
   assert_eq 1 "$(jq 'length' "${CASE_DIR}/stdout")" "label beyond first 100 matches"
   assert_eq 1 "$(cat "${CASE_DIR}/labels.count")" "label cursor requested"
+
+  for failure in transport malformed graphql; do
+    begin_case "discussion_label_${failure}"
+    make_rest "${CASE_DIR}/fixtures/rest-moved-1.json" 1 false 1 acme repo 9
+    repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 1 \
+      "[$node]" false null
+    message='标签后续页请求失败'
+    if [[ "$failure" == malformed ]]; then
+      printf '%s\n' 'not JSON' >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+      message='标签后续页响应无效'
+    elif [[ "$failure" == graphql ]]; then
+      printf '%s\n' '{"data":null,"errors":[{"message":"fixture error"}]}' \
+        >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+      message='标签后续页响应无效'
+    fi
+    status="$(run_cli --account me --repo acme/repo --hygiene --label WANTED --json)"
+    assert_eq 1 "$status" "label $failure failure status"
+    assert_eq '' "$(cat "${CASE_DIR}/stdout")" "label $failure emits no partial output"
+    assert_contains "${CASE_DIR}/stderr" "$message" "label $failure error context"
+
+    rm "${CASE_DIR}/repo.count" "${CASE_DIR}/labels.count"
+    jq -n '{data:{repository:{discussion:{labels:{
+      totalCount:101, nodes:[{name:"WaNtEd"}],
+      pageInfo:{hasNextPage:false,endCursor:null}
+    }}}}}' >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+    status="$(run_cli --account me --repo acme/repo --hygiene --label WANTED --json)"
+    assert_eq 0 "$status" "label $failure later retry status"
+    assert_eq 2 "$(jq 'length' "${CASE_DIR}/stdout")" \
+      "label $failure retry retains Discussion and Search results"
+  done
   pass label_filters
 }
 

@@ -210,7 +210,7 @@ outer_response() {
   local file="$1" total="$2" repos_json="$3" has_next="$4" cursor="$5"
   jq -n --argjson total "$total" --argjson repos "$repos_json" \
     --argjson has_next "$has_next" --argjson cursor "$cursor" '
-    {data:{user:{repositories:{
+    {data:{repositoryOwner:{repositories:{
       totalCount:$total,
       nodes:$repos,
       pageInfo:{hasNextPage:$has_next,endCursor:$cursor}
@@ -254,17 +254,17 @@ test_api_failures() {
   assert_eq "" "$(cat "${CASE_DIR}/stdout")" "later failure has no partial output"
 
   begin_case graphql_errors
-  printf '%s\n' '{"data":{"user":null},"errors":[{"message":"boom"}]}' \
+  printf '%s\n' '{"data":{"repositoryOwner":null},"errors":[{"message":"boom"}]}' \
     >"${CASE_DIR}/fixtures/graphql-outer-1.json"
   status="$(run_cli --account me --discussions --json)"
   assert_eq 1 "$status" "HTTP-200 GraphQL errors fail"
   assert_eq "" "$(cat "${CASE_DIR}/stdout")" "GraphQL error has no stdout"
 
-  begin_case null_user
-  printf '%s\n' '{"data":{"user":null}}' \
+  begin_case null_repository_owner
+  printf '%s\n' '{"data":{"repositoryOwner":null}}' \
     >"${CASE_DIR}/fixtures/graphql-outer-1.json"
   status="$(run_cli --account me --discussions --json)"
-  assert_eq 1 "$status" "null GraphQL user fails"
+  assert_eq 1 "$status" "null GraphQL repositoryOwner fails"
 
   begin_case malformed_rest
   printf '%s\n' '{}' >"${CASE_DIR}/fixtures/rest-issue-1.json"
@@ -566,6 +566,129 @@ test_discussion_state() {
   assert_eq '"Acme/Repo"' "$(jq -c '.[0].repo_full_name' "${CASE_DIR}/stdout")" \
     "explicit repo uses canonical API casing"
   pass discussion_state
+}
+
+test_discussion_owner_http() {
+  # github.localhost is gh's HTTP test host; the proxy keeps all requests local.
+  if ! python3 - "$CLI" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+requests = []
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def reply(self, body, status=200):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        query, variables = request["query"], request["variables"]
+        requests.append(request)
+        account = variables["account"]
+        field = "repositoryOwner" if "repositoryOwner(login:" in query else "user"
+        if (field == "user" and account == "acme") or account == "missing":
+            self.reply({"data": {field: None}, "errors": [{
+                "type": "NOT_FOUND", "path": [field],
+                "message": "Could not resolve to a " + field + " with the login of '" + account + "'."
+            }]})
+        elif account == "null":
+            self.reply({"data": {field: None}})
+        elif account == "malformed":
+            self.reply({"data": {field: {"repositories": {"nodes": []}}}})
+        elif account == "error":
+            self.reply({"message": "server failure"}, 500)
+        elif account == "late-error" and variables.get("repoCursor"):
+            self.reply({"data": {field: None}, "errors": [{"message": "later page failure"}]})
+        else:
+            page = 2 if variables.get("repoCursor") else 1
+            repo = account + "/repo" + str(page)
+            discussion = {
+                "number": page, "title": "discussion", "url": "https://github.com/" + repo + "/discussions/" + str(page),
+                "createdAt": "2023-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z",
+                "closed": False, "closedAt": None, "category": {"name": "General"},
+                "author": {"login": "alice"},
+                "labels": {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+            }
+            self.reply({"data": {field: {"repositories": {
+                "totalCount": 2, "nodes": [{
+                    "nameWithOwner": repo, "isFork": False, "hasDiscussionsEnabled": True,
+                    "discussions": {"totalCount": 1, "nodes": [discussion],
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None}}
+                }], "pageInfo": {"hasNextPage": page == 1, "endCursor": "R1" if page == 1 else None}
+            }}}})
+
+    def do_GET(self):
+        self.reply({"total_count": 1, "incomplete_results": False, "items": [{
+            "repository_url": "https://api.github.com/repos/acme/repo1",
+            "number": 9, "title": "moved", "html_url": "https://github.com/acme/repo1/issues/9",
+            "state": "closed", "updated_at": "2024-01-01T00:00:00Z", "closed_at": "2024-01-01T00:00:00Z"
+        }]})
+
+
+with tempfile.TemporaryDirectory() as config, ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = os.environ.copy()
+    env.update(GH_HOST="github.localhost", GH_TOKEN="dummy-test-token",
+               GITHUB_TOKEN="", GH_ENTERPRISE_TOKEN="", GITHUB_ENTERPRISE_TOKEN="",
+               GH_CONFIG_DIR=config, GH_DEBUG="", NO_PROXY="", no_proxy="")
+    proxy = "http://127.0.0.1:" + str(server.server_port)
+    env.update(HTTP_PROXY=proxy, http_proxy=proxy, HTTPS_PROXY=proxy, https_proxy=proxy)
+    failures = []
+    try:
+        for account, mode in [("me", "--discussions"), ("acme", "--discussions"),
+                              ("acme", "--hygiene"), ("missing", "--discussions"),
+                              ("null", "--discussions"), ("malformed", "--discussions"),
+                              ("error", "--discussions"), ("late-error", "--hygiene")]:
+            requests.clear()
+            result = subprocess.run(["/bin/bash", sys.argv[1], "--account", account, mode,
+                                     "--discussion-limit", "1", "--json"],
+                                    env=env, capture_output=True, text=True, timeout=20)
+            try:
+                if account in ("me", "acme"):
+                    assert result.returncode == 0, result.stderr
+                    items = json.loads(result.stdout)
+                    assert [item["repo_full_name"] for item in items if item["kind"] == "discussion"] == [account + "/repo1", account + "/repo2"]
+                    if mode == "--hygiene":
+                        assert [item["number"] for item in items if item["kind"] == "moved_to_discussion"] == [9]
+                    assert len(requests) == 2
+                    assert requests[1]["variables"]["repoCursor"] == "R1"
+                    assert all("ownerAffiliations:[OWNER],isFork:false" in request["query"] and
+                               request["variables"]["repoFirst"] == 20 for request in requests)
+                else:
+                    assert result.returncode == 1, result.stderr
+                    assert result.stdout == "", result.stdout
+                    assert "Discussion 仓库枚举" in result.stderr, result.stderr
+                print("HTTP owner case:", account, mode, "passed")
+            except AssertionError as error:
+                failures.append((account, mode, str(error)))
+    finally:
+        server.shutdown()
+        thread.join()
+    if failures:
+        for failure in failures:
+            print("HTTP owner case failed:", *failure, file=sys.stderr)
+        sys.exit(1)
+PY
+  then
+    fail_test discussion_owner_http "owner HTTP regression failed"
+    return 1
+  fi
+  pass discussion_owner_http
 }
 
 test_discussion_repo_enumeration() {
@@ -908,7 +1031,7 @@ should_run() {
 tests=(
   rest_pagination api_failures scope_combinations selector_modes label_filters json_contract
   discussion_pagination discussion_stale_scan discussion_state
-  discussion_repo_enumeration table_default table_width_and_repo_identity
+  discussion_repo_enumeration discussion_owner_http table_default table_width_and_repo_identity
   table_fit_and_sort table_repository_wrap color_modes renderer_modes
   table_unsafe_text installer_atomicity installer_version_validation
 )

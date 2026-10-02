@@ -281,7 +281,8 @@ fetch_discussion_labels() {
   while :; do
     requested=1
     for label_value in "${labels[@]+"${labels[@]}"}"; do
-      if ! jq -es --arg label "$label_value" 'index($label) != null' \
+      if ! jq -es --arg label "$label_value" \
+        'map(ascii_downcase) | index($label | ascii_downcase) != null' \
         "$names_file" >/dev/null; then
         requested=0
         break

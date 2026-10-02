@@ -362,6 +362,7 @@ test_selector_modes() {
 }
 
 test_label_filters() {
+  local failure message
   begin_case search_label_escape
   empty_rest "${CASE_DIR}/fixtures/rest-issue-1.json"
   status="$(run_cli --account me --issues --json --label 'say "hi"\path')"
@@ -407,6 +408,36 @@ test_label_filters() {
   assert_eq 0 "$status" "label beyond first 100 status"
   assert_eq 1 "$(jq 'length' "${CASE_DIR}/stdout")" "label beyond first 100 matches"
   assert_eq 1 "$(cat "${CASE_DIR}/labels.count")" "label cursor requested"
+
+  for failure in transport malformed graphql; do
+    begin_case "discussion_label_${failure}"
+    make_rest "${CASE_DIR}/fixtures/rest-moved-1.json" 1 false 1 acme repo 9
+    repo_response "${CASE_DIR}/fixtures/graphql-repo-1.json" acme/repo 1 \
+      "[$node]" false null
+    message='标签后续页请求失败'
+    if [[ "$failure" == malformed ]]; then
+      printf '%s\n' 'not JSON' >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+      message='标签后续页响应无效'
+    elif [[ "$failure" == graphql ]]; then
+      printf '%s\n' '{"data":null,"errors":[{"message":"fixture error"}]}' \
+        >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+      message='标签后续页响应无效'
+    fi
+    status="$(run_cli --account me --repo acme/repo --hygiene --label WANTED --json)"
+    assert_eq 1 "$status" "label $failure failure status"
+    assert_eq '' "$(cat "${CASE_DIR}/stdout")" "label $failure emits no partial output"
+    assert_contains "${CASE_DIR}/stderr" "$message" "label $failure error context"
+
+    rm "${CASE_DIR}/repo.count" "${CASE_DIR}/labels.count"
+    jq -n '{data:{repository:{discussion:{labels:{
+      totalCount:101, nodes:[{name:"WaNtEd"}],
+      pageInfo:{hasNextPage:false,endCursor:null}
+    }}}}}' >"${CASE_DIR}/fixtures/graphql-labels-1.json"
+    status="$(run_cli --account me --repo acme/repo --hygiene --label WANTED --json)"
+    assert_eq 0 "$status" "label $failure later retry status"
+    assert_eq 2 "$(jq 'length' "${CASE_DIR}/stdout")" \
+      "label $failure retry retains Discussion and Search results"
+  done
   pass label_filters
 }
 
